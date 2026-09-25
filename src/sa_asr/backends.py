@@ -193,15 +193,29 @@ class WhisperTranscriber(Transcriber):
 
 
 class MMSTranscriber(Transcriber):
-    """Meta MMS (wav2vec2 CTC with per-language adapters)."""
+    """Meta MMS (wav2vec2 CTC with per-language adapters).
 
-    def __init__(self, name: str, model: str = "facebook/mms-1b-all", device: str | None = None, **_):
+    wav2vec2 works on raw samples, so memory grows with the padded audio length of a batch
+    (a 16 GB T4 ran out on 16 clips of up to 30 s). Batches are therefore split so no
+    sub-batch holds more than max_batch_seconds of padded audio.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        model: str = "facebook/mms-1b-all",
+        device: str | None = None,
+        max_batch_seconds: float = 120.0,
+        **_,
+    ):
         from transformers import AutoProcessor, Wav2Vec2ForCTC
 
         self.name = name
         self.device = pick_device(device)
+        self.dtype = torch.float16 if self.device.type == "cuda" else torch.float32
+        self.max_batch_samples = int(max_batch_seconds * SAMPLE_RATE)
         self.processor = AutoProcessor.from_pretrained(model)
-        self.model = Wav2Vec2ForCTC.from_pretrained(model).to(self.device).eval()
+        self.model = Wav2Vec2ForCTC.from_pretrained(model, dtype=self.dtype).to(self.device).eval()
         self.adapters = set(getattr(self.processor.tokenizer, "vocab", {}).keys())
         self._loaded: str | None = None
 
@@ -214,10 +228,32 @@ class MMSTranscriber(Transcriber):
             self.processor.tokenizer.set_target_lang(lang.mms_adapter)
             self.model.load_adapter(lang.mms_adapter)
             self._loaded = lang.mms_adapter
-        inputs = self.processor(audios, sampling_rate=SAMPLE_RATE, return_tensors="pt", padding=True)
-        logits = self.model(**{k: v.to(self.device) for k, v in inputs.items()}).logits
-        ids = torch.argmax(logits, dim=-1)
-        return [t.strip() for t in self.processor.batch_decode(ids)]
+        texts = []
+        for group in split_by_padded_length([len(a) for a in audios], self.max_batch_samples):
+            inputs = self.processor([audios[i] for i in group], sampling_rate=SAMPLE_RATE, return_tensors="pt", padding=True)
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            inputs["input_values"] = inputs["input_values"].to(self.dtype)
+            ids = torch.argmax(self.model(**inputs).logits, dim=-1)
+            texts += [t.strip() for t in self.processor.batch_decode(ids)]
+        return texts
+
+
+def split_by_padded_length(lengths: list[int], max_total: int) -> list[list[int]]:
+    """Consecutive index groups whose padded size (count x longest) stays within max_total.
+
+    Order is preserved so results line up with the input. A single item longer than
+    max_total still gets its own group.
+    """
+    groups, current, longest = [], [], 0
+    for i, n in enumerate(lengths):
+        if current and (len(current) + 1) * max(longest, n) > max_total:
+            groups.append(current)
+            current, longest = [], 0
+        current.append(i)
+        longest = max(longest, n)
+    if current:
+        groups.append(current)
+    return groups
 
 
 BACKENDS = {"whisper": WhisperTranscriber, "mms": MMSTranscriber}

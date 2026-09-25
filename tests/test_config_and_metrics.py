@@ -168,3 +168,16 @@ def test_hub_sync_paths_mirror_project_layout():
 
     assert HubSync.rel("results/baseline") == "results/baseline"
     assert HubSync.rel(PROJECT_ROOT / "data" / "eval_cache") == "data/eval_cache"
+
+
+def test_split_by_padded_length_bounds_memory_and_keeps_order():
+    from sa_asr.backends import split_by_padded_length
+
+    sr = 16_000
+    lengths = [30 * sr] * 16  # the batch that ran a T4 out of memory
+    groups = split_by_padded_length(lengths, 120 * sr)
+    assert [i for g in groups for i in g] == list(range(16))
+    assert all(len(g) * max(lengths[i] for i in g) <= 120 * sr for g in groups)
+    # short clips stay together; an oversize clip gets its own group
+    assert split_by_padded_length([sr] * 16, 120 * sr) == [list(range(16))]
+    assert split_by_padded_length([200 * sr, sr], 120 * sr) == [[0], [1]]
