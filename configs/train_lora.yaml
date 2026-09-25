@@ -19,8 +19,16 @@ corpora:
   lwazi: 1.0          # real telephone speech, 9 languages (licence unstated: check before commercial use)
   fleurs: 0           # kept out so FLEURS stays an unseen benchmark
 
-# Optional per-language multipliers, e.g. to upweight languages with weak baseline WER.
-language_weights: {}
+# Per-language multipliers. A language's share of training = its multiplier x the summed
+# weights of the corpora covering it, so languages in fewer corpora get less by default.
+# Baseline (2026-09-25): no existing model handles siSwati or Sepedi; full fine-tuning
+# (dsfsi-anv) destroyed Afrikaans (75% -> 301% WER) and doubled English WER. These
+# multipliers bring nso/ssw up to the level of the 4-corpus languages and protect afr/eng.
+language_weights:
+  nso: 2.0
+  ssw: 2.0
+  afr: 2.0
+  eng: 1.5
 
 text: clean           # clean = keep case/punctuation; normalized = lowercase, no punctuation
 max_duration_s: 30
