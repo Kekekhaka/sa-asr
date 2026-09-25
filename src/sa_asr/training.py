@@ -93,11 +93,16 @@ def build_train_stream(
     example_fn,
     seed: int,
     shuffle_buffer: int,
+    max_duration_s: float | None = None,
 ) -> IterableDataset:
-    """Mix (corpus, language, weight) streams by weight into one endless training stream."""
+    """Mix (corpus, language, weight) streams by weight into one endless training stream.
+
+    Clips longer than max_duration_s are dropped before shuffling (see load_corpus).
+    """
     parts, weights = [], []
     for corpus, lang, weight in streams:
-        parts.append(load_corpus(corpus, lang, "train").shuffle(seed=seed, buffer_size=shuffle_buffer))
+        stream = load_corpus(corpus, lang, "train", max_duration_s=max_duration_s)
+        parts.append(stream.shuffle(seed=seed, buffer_size=shuffle_buffer))
         weights.append(weight)
     probs = [w / sum(weights) for w in weights]
     mixed = interleave_datasets(parts, probabilities=probs, seed=seed, stopping_strategy="all_exhausted")
@@ -145,6 +150,18 @@ def find_resume_checkpoint(out_dir: Path, hub_repo: str | None) -> Path | None:
     return None
 
 
+def memory_stats() -> dict[str, float]:
+    """RAM used by this process and its dataloader workers, RAM still free, and GPU peak (GB)."""
+    import psutil
+
+    proc = psutil.Process()
+    rss = proc.memory_info().rss + sum(c.memory_info().rss for c in proc.children(recursive=True))
+    stats = {"ram_used_gb": round(rss / 2**30, 1), "ram_free_gb": round(psutil.virtual_memory().available / 2**30, 1)}
+    if torch.cuda.is_available():
+        stats["gpu_peak_gb"] = round(torch.cuda.max_memory_allocated() / 2**30, 1)
+    return stats
+
+
 class WhisperCollator:
     """Stacks log-mel features and pads labels with -100 (ignored by the loss)."""
 
@@ -176,6 +193,11 @@ class WhisperWERTrainer(Seq2SeqTrainer):
         self.wer_sets = wer_sets or {}
         self.wer_processor = wer_processor
         self.wer_batch_size = wer_batch_size
+
+    def log(self, logs: dict[str, float], *args, **kwargs) -> None:
+        # Memory next to the loss: a run killed by the OS (exit code -9) otherwise leaves no clue.
+        logs = {**logs, **memory_stats()}
+        super().log(logs, *args, **kwargs)
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval", **gen_kwargs):
         metrics = super().evaluate(eval_dataset, ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix)

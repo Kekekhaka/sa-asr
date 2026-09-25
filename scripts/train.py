@@ -126,7 +126,9 @@ def main():
         processor, labels, max_dur, max_label_tokens,
         telephone_prob=aug.get("telephone_prob", 0.0), noise_prob=aug.get("noise_prob", 0.0), seed=seed,
     )
-    train_ds = build_train_stream(streams, example_fn, seed=data_seed, shuffle_buffer=cfg.get("shuffle_buffer", 200))
+    train_ds = build_train_stream(
+        streams, example_fn, seed=data_seed, shuffle_buffer=cfg.get("shuffle_buffer", 64), max_duration_s=max_dur
+    )
 
     vcfg = cfg.get("validation", {})
     cache_dir = resolve(vcfg.get("cache_dir", "data/eval_cache"))

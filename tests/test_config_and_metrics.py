@@ -181,3 +181,15 @@ def test_split_by_padded_length_bounds_memory_and_keeps_order():
     # short clips stay together; an oversize clip gets its own group
     assert split_by_padded_length([sr] * 16, 120 * sr) == [list(range(16))]
     assert split_by_padded_length([200 * sr, sr], 120 * sr) == [[0], [1]]
+
+
+def test_header_duration_reads_length_without_decoding(tmp_path):
+    import io
+
+    from sa_asr.data import header_duration
+
+    for fmt in ("WAV", "FLAC"):
+        buf = io.BytesIO()
+        sf.write(buf, np.zeros(48_000 * 3, np.float32), 48_000, format=fmt)
+        assert header_duration({"bytes": buf.getvalue()}) == pytest.approx(3.0)
+    assert header_duration({"bytes": b"not audio"}) is None

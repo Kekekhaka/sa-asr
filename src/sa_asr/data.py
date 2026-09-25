@@ -162,12 +162,24 @@ def in_validation_holdout(speaker: str, share: float) -> bool:
     return zlib.crc32(speaker.encode("utf-8")) % 10_000 < share * 10_000
 
 
-def load_corpus(corpus: str, lang: Language, split: str) -> IterableDataset:
+def header_duration(audio: dict) -> float | None:
+    """Clip length in seconds from the file header, without decoding; None if unreadable."""
+    try:
+        return sf.info(io.BytesIO(audio["bytes"]) if audio.get("bytes") else audio["path"]).duration
+    except Exception:
+        return None
+
+
+def load_corpus(corpus: str, lang: Language, split: str, max_duration_s: float | None = None) -> IterableDataset:
     """Stream one (corpus, language, split) in the common schema.
 
     For multilingual corpora this filters one language out of the shared stream. That
     reads the other languages' rows too, but a mixed stream is worse: Lwazi's shards are
     sorted by language, so a mixed stream would feed the model one language at a time.
+
+    max_duration_s drops longer clips here, from the file header, so they never reach a
+    shuffle buffer downstream. Swivuriso has many multi-minute recordings; buffering
+    those ran a 30 GB machine out of RAM.
     """
     spec = CORPORA[corpus]
     if corpus not in lang.corpora:
@@ -192,6 +204,13 @@ def load_corpus(corpus: str, lang: Language, split: str) -> IterableDataset:
         want_holdout = split == "validation"
         share = spec.validation_holdout
         ds = ds.filter(lambda ex: in_validation_holdout(str(ex[spec.speaker_column]), share) == want_holdout)
+
+    if max_duration_s is not None:
+        def short_enough(ex):
+            d = header_duration(ex["audio"])
+            return d is None or d <= max_duration_s  # unreadable headers are decided after decoding
+
+        ds = ds.filter(short_enough)
 
     id_cols = spec.id_column if isinstance(spec.id_column, tuple) else (spec.id_column,)
 

@@ -33,7 +33,7 @@ language_weights:
 text: clean           # clean = keep case/punctuation; normalized = lowercase, no punctuation
 max_duration_s: 30
 max_label_tokens: 440
-shuffle_buffer: 200   # per stream; Swivuriso rows are ~1 MB each, so keep this modest
+shuffle_buffer: 64    # clips held per stream for shuffling; x ~23 streams, so RAM grows fast with this
 
 # Channel augmentation so one model handles phone calls as well as app/mic recordings.
 # telephone: 8 kHz band limit + G.711 mu-law (skipped for Lwazi, which is already phone audio)
@@ -61,8 +61,8 @@ training:
   eval_steps: 500
   save_steps: 500
   save_total_limit: 3
-  logging_steps: 25
-  dataloader_num_workers: 2
+  logging_steps: 10    # each log line also shows RAM/GPU memory
+  dataloader_num_workers: 1   # the mixed stream has 1 shard, so more workers go unused
   report_to: none     # or tensorboard / wandb
   seed: 42
 
