@@ -1,0 +1,63 @@
+# LoRA fine-tune of Whisper large-v3-turbo on South African languages.
+#   python scripts/train.py --config configs/train_lora.yaml
+# Sized for a single A100 40GB. On a smaller GPU halve per_device_train_batch_size and
+# double gradient_accumulation_steps.
+
+base_model: openai/whisper-large-v3-turbo
+# Alternatives worth a run once the baseline numbers are in:
+#   openai/whisper-large-v3                        4x larger decoder; more capacity for new languages, ~2x slower
+#   dsfsi-anv/za-anv-multilingual-whisper-v3-turbo already adapted to 7 SA languages (MIT)
+output_dir: outputs/whisper-turbo-sa-lora
+
+languages: all        # all 11, or a list, e.g. [zul, xho, sot]
+
+# Sampling weight of each corpus within a language (0 = don't train on it).
+corpora:
+  nchlt: 1.0          # read prompts, ~56 h/language, 10 languages (English is nchlt_eng)
+  swivuriso: 2.0      # scripted + spontaneous, much larger, 7 languages (gated)
+  nchlt_eng: 1.0      # South African English (NCHLT); 5% of speakers held out for validation
+  lwazi: 1.0          # real telephone speech, 9 languages (licence unstated: check before commercial use)
+  fleurs: 0           # kept out so FLEURS stays an unseen benchmark
+
+# Optional per-language multipliers, e.g. to upweight languages with weak baseline WER.
+language_weights: {}
+
+text: clean           # clean = keep case/punctuation; normalized = lowercase, no punctuation
+max_duration_s: 30
+max_label_tokens: 440
+shuffle_buffer: 200   # per stream; Swivuriso rows are ~1 MB each, so keep this modest
+
+# Channel augmentation so one model handles phone calls as well as app/mic recordings.
+# telephone: 8 kHz band limit + G.711 mu-law (skipped for Lwazi, which is already phone audio)
+augment:
+  telephone_prob: 0.3
+  noise_prob: 0.15
+
+lora:
+  enabled: true       # false = full fine-tuning (then use learning_rate ~1e-5)
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, out_proj, fc1, fc2]
+
+training:
+  max_steps: 6000
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
+  learning_rate: 1.0e-4
+  warmup_steps: 300
+  lr_scheduler_type: linear
+  weight_decay: 0.0
+  gradient_checkpointing: true
+  eval_steps: 500
+  save_steps: 500
+  save_total_limit: 3
+  logging_steps: 25
+  dataloader_num_workers: 2
+  report_to: none     # or tensorboard / wandb
+  seed: 42
+
+validation:
+  cache_dir: data/eval_cache
+  max_samples_per_set: 32   # per corpus x language, from each corpus's validation split

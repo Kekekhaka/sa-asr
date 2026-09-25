@@ -1,0 +1,86 @@
+# Language registry. Keys are ISO 639-3 codes and are used everywhere in this project
+# (CLI flags, config files, output paths).
+#
+# whisper_token
+#   Whisper has no language token for any South African language except Afrikaans (and
+#   English). For the others we borrow an existing token as a "proxy" and let fine-tuning
+#   teach the model what it means. Each language gets a DISTINCT proxy so the fine-tuned
+#   model can also do language identification. Proxies are arbitrary; do not change them
+#   after training a model, because the model has learned this exact mapping.
+# whisper_native
+#   true only when Whisper was pre-trained on the language, i.e. zero-shot forcing the
+#   token is meaningful.
+# mms_adapter
+#   Adapter code in facebook/mms-1b-all, or null if MMS has no adapter for this language.
+# corpora
+#   Config name of this language in each corpus (see src/sa_asr/data.py). Omit a corpus
+#   if it does not cover the language. For multilingual corpora (lwazi) the value is
+#   that corpus's name for the language.
+
+languages:
+  eng:
+    name: English (South African)
+    whisper_token: en
+    whisper_native: true
+    mms_adapter: eng
+    corpora: {nchlt_eng: default}
+  afr:
+    name: Afrikaans
+    whisper_token: af
+    whisper_native: true
+    mms_adapter: afr
+    corpora: {nchlt: afr, fleurs: af_za}
+  zul:
+    name: isiZulu
+    whisper_token: sn
+    whisper_native: false
+    mms_adapter: zul
+    corpora: {nchlt: zul, swivuriso: zul, fleurs: zu_za, lwazi: isizulu}
+  xho:
+    name: isiXhosa
+    whisper_token: sw
+    whisper_native: false
+    mms_adapter: xho
+    corpora: {nchlt: xho, swivuriso: xho, fleurs: xh_za, lwazi: isixhosa}
+  nso:
+    name: Sepedi
+    whisper_token: ha
+    whisper_native: false
+    mms_adapter: nso
+    corpora: {nchlt: nso, fleurs: nso_za, lwazi: sepedi}
+  sot:
+    name: Sesotho
+    whisper_token: so
+    whisper_native: false
+    mms_adapter: null
+    corpora: {nchlt: sot, swivuriso: sot, lwazi: sesotho}
+  tsn:
+    name: Setswana
+    whisper_token: mg
+    whisper_native: false
+    mms_adapter: null
+    corpora: {nchlt: tsn, swivuriso: tsn, lwazi: setswana}
+  tso:
+    name: Xitsonga
+    whisper_token: am
+    whisper_native: false
+    mms_adapter: tso
+    corpora: {nchlt: tso, swivuriso: tso, lwazi: xitsonga}
+  ven:
+    name: Tshivenda
+    whisper_token: yo
+    whisper_native: false
+    mms_adapter: null
+    corpora: {nchlt: ven, swivuriso: ven, lwazi: tshivenda}
+  ssw:
+    name: siSwati
+    whisper_token: ln
+    whisper_native: false
+    mms_adapter: null
+    corpora: {nchlt: ssw, lwazi: siswati}
+  nbl:
+    name: isiNdebele
+    whisper_token: lb
+    whisper_native: false
+    mms_adapter: null
+    corpora: {nchlt: nbl, swivuriso: nbl, lwazi: isindebele}

@@ -1,0 +1,22 @@
+# Tiny end-to-end check that runs on a CPU in a few minutes.
+#   python scripts/evaluate.py --config configs/eval_smoke.yaml
+# The WER numbers are meaningless (whisper-tiny); this only proves the pipeline works.
+
+output_dir: results/smoke
+cache_dir: data/eval_cache
+split: test
+max_samples: 4
+max_duration_s: 30
+seed: 42
+batch_size: 4
+
+eval_sets:
+  fleurs: [afr, zul]
+  nchlt: [zul]
+  nchlt_eng: [eng]
+
+models:
+  - name: whisper-tiny
+    type: whisper
+    model: openai/whisper-tiny
+    language_mode: native

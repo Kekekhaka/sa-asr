@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# large / generated
+data/
+outputs/
+results/smoke/
+wandb/
+*.zip

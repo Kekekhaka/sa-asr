@@ -1,0 +1,45 @@
+# Few-step CPU run with whisper-tiny to check the training pipeline end to end.
+#   python scripts/train.py --config configs/train_smoke.yaml
+# Produces a useless model; only checks that data, labels, LoRA, eval and saving work.
+
+base_model: openai/whisper-tiny
+output_dir: outputs/smoke
+languages: [zul, eng]
+corpora:
+  nchlt: 1.0
+  nchlt_eng: 1.0
+language_weights: {}
+text: clean
+max_duration_s: 30
+max_label_tokens: 440
+shuffle_buffer: 8
+
+augment:
+  telephone_prob: 0.5
+  noise_prob: 0.2
+
+lora:
+  enabled: true
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [q_proj, v_proj]
+
+training:
+  max_steps: 4
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 1
+  learning_rate: 1.0e-4
+  warmup_steps: 0
+  gradient_checkpointing: false
+  eval_steps: 4
+  save_steps: 4
+  save_total_limit: 1
+  logging_steps: 1
+  dataloader_num_workers: 0
+  seed: 42
+
+validation:
+  cache_dir: data/eval_cache
+  max_samples_per_set: 2

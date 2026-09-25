@@ -1,0 +1,51 @@
+# Baseline: how well do existing models already handle South African languages?
+# Run on a GPU:  python scripts/evaluate.py --config configs/eval_baseline.yaml
+
+output_dir: results/baseline
+cache_dir: data/eval_cache
+split: test
+max_samples: 200      # per corpus x language; set to null to score the full test split
+max_duration_s: 30    # Whisper's window; longer utterances are skipped (counts in stats.json)
+seed: 42
+batch_size: 16
+
+# corpus -> language codes, or "all" for every language the corpus covers.
+# FLEURS is the fairest comparison: none of the models below were fine-tuned on it.
+# NCHLT/Swivuriso test sets may overlap with what the dsfsi-anv models were trained on.
+eval_sets:
+  fleurs: all
+  nchlt: all
+  swivuriso: all      # gated: accept the terms on the HF dataset page first
+  nchlt_eng: all      # South African English
+  lwazi: all          # real telephone speech: the phone-call benchmark
+
+models:
+  # Zero-shot Whisper. language_mode auto = let Whisper detect the language, because
+  # it has no token for most of these languages.
+  - name: whisper-large-v3-turbo
+    type: whisper
+    model: openai/whisper-large-v3-turbo
+    language_mode: auto
+  - name: whisper-large-v3
+    type: whisper
+    model: openai/whisper-large-v3
+    language_mode: auto
+
+  # Meta MMS: CTC model with adapters for eng, afr, zul, xho, nso, tso (others are skipped).
+  # CC-BY-NC-4.0: fine as a benchmark, not for a commercial product.
+  - name: mms-1b-all
+    type: mms
+    model: facebook/mms-1b-all
+
+  # Community fine-tune of turbo on Swivuriso (7 languages), MIT licence.
+  - name: dsfsi-anv-multilingual-turbo
+    type: whisper
+    model: dsfsi-anv/za-anv-multilingual-whisper-v3-turbo
+    processor: openai/whisper-large-v3-turbo
+    language_mode: auto
+
+  # Add your own fine-tuned model after training, e.g.:
+  # - name: sa-turbo-lora
+  #   type: whisper
+  #   model: outputs/whisper-turbo-sa-lora/final
+  #   language_mode: proxy
