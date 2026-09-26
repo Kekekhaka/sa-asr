@@ -15,6 +15,7 @@ FLAC so every model is scored on exactly the same audio without re-streaming.
 
 from __future__ import annotations
 
+import gc
 import io
 import json
 import logging
@@ -194,10 +195,16 @@ def load_corpus(corpus: str, lang: Language, split: str, max_duration_s: float |
     repo_split = spec.splits[repo_split]
 
     config = None if spec.language_column else lang.corpora[corpus]
-    # Experiment knob: rows per Arrow record batch when reading Parquet (default: a whole
-    # row group). Smaller batches bound how much audio is materialized at once.
+    # PyArrow pre-buffers Parquet reads by default and keeps every byte it has read from a
+    # file until the reader is garbage-collected. When streaming, that is the whole file
+    # per open stream, and it piles up across files: on Kaggle the training data pipeline
+    # alone went from 1 to 26 GB of RAM in 100 s. Reading without pre-buffering keeps it flat.
+    import pyarrow.dataset as pads
+
     extra = {}
-    if os.environ.get("SA_ASR_PARQUET_BATCH_SIZE"):
+    if os.environ.get("SA_ASR_PARQUET_PREBUFFER", "0") != "1":
+        extra["fragment_scan_options"] = pads.ParquetFragmentScanOptions(pre_buffer=False)
+    if os.environ.get("SA_ASR_PARQUET_BATCH_SIZE"):  # experiment knob: rows per Arrow batch
         extra["batch_size"] = int(os.environ["SA_ASR_PARQUET_BATCH_SIZE"])
     ds = load_dataset(spec.repo, config, split=repo_split, streaming=True, **extra)
     # Before any filter/map: otherwise `datasets` decodes audio itself (needs torchcodec).
@@ -212,7 +219,15 @@ def load_corpus(corpus: str, lang: Language, split: str, max_duration_s: float |
         ds = ds.filter(lambda ex: in_validation_holdout(str(ex[spec.speaker_column]), share) == want_holdout)
 
     if max_duration_s is not None:
+        seen = [0]
+
         def short_enough(ex):
+            # Safety net: PyArrow read buffers can sit in reference cycles that Python's
+            # garbage collector rarely visits while few objects are created, so sweep
+            # regularly. Costs milliseconds per few hundred rows.
+            seen[0] += 1
+            if seen[0] % 300 == 0:
+                gc.collect()
             d = header_duration(ex["audio"])
             return d is None or d <= max_duration_s  # unreadable headers are decided after decoding
 

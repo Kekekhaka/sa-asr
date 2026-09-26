@@ -49,8 +49,7 @@ def commands(stage: str, user: str, s: dict) -> list[tuple[str, dict]]:
                 (f"{py} scripts/evaluate.py --config configs/eval_smoke.yaml", {}),
                 (f"{py} scripts/train.py --config configs/train_smoke.yaml", {})]
     if stage == "diagnose":
-        return [(f"{py} scripts/diagnose_memory.py --seconds 150", {}),
-                (f"{py} scripts/diagnose_memory.py --seconds 150", {"SA_ASR_PARQUET_BATCH_SIZE": "16"})]
+        return [(f"{py} scripts/diagnose_memory.py --seconds 180", {})]
     if stage == "baseline":
         return [(f"{py} scripts/evaluate.py --config configs/eval_baseline.yaml --models {s['baseline_models']} "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
