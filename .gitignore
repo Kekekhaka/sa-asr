@@ -9,3 +9,5 @@ outputs/
 results/smoke/
 wandb/
 *.zip
+logs/
+*.log

@@ -65,6 +65,7 @@ training:
   dataloader_num_workers: 1   # the mixed stream has 1 shard, so more workers go unused
   report_to: none     # or tensorboard / wandb
   seed: 42
+  max_runtime_hours: 11.0   # save + stop before Kaggle's 12 h limit; resume continues
 
 validation:
   cache_dir: data/eval_cache

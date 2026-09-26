@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import torch
 from datasets import Dataset, IterableDataset, interleave_datasets
-from transformers import Seq2SeqTrainer, WhisperProcessor
+from transformers import Seq2SeqTrainer, TrainerCallback, WhisperProcessor
 
 from .audio import SAMPLE_RATE, augment, decode_audio, duration_seconds
 from .config import Language
@@ -192,6 +192,29 @@ def start_memory_monitor(interval_s: float = 30.0) -> None:
     threading.Thread(target=loop, name="memory-monitor", daemon=True).start()
 
 
+class TimeLimitCallback(TrainerCallback):
+    """Save and stop cleanly before a platform's hard runtime limit kills the process.
+
+    Kaggle stops a run at 12 h without warning; anything not yet pushed is lost. Stopping
+    at the deadline saves a checkpoint (pushed to the Hub by the Trainer), so the next
+    session resumes with --resume.
+    """
+
+    def __init__(self, deadline: float):
+        self.deadline = deadline  # time.time() value
+        self.hit = False
+
+    def on_step_end(self, args, state, control, **kwargs):
+        import time
+
+        if time.time() >= self.deadline:
+            log.warning("Runtime limit reached at step %d: saving a checkpoint and stopping", state.global_step)
+            self.hit = True
+            control.should_save = True
+            control.should_training_stop = True
+        return control
+
+
 class WhisperCollator:
     """Stacks log-mel features and pads labels with -100 (ignored by the loss)."""
 
@@ -223,10 +246,31 @@ class WhisperWERTrainer(Seq2SeqTrainer):
         self.wer_sets = wer_sets or {}
         self.wer_processor = wer_processor
         self.wer_batch_size = wer_batch_size
+        self._timing = {"data_s": 0.0, "steps": 0, "since": None}
+
+    def get_batch_samples(self, epoch_iterator, num_batches, *args, **kwargs):
+        # Time spent waiting for the data stream, so a slow step can be pinned on data or GPU.
+        import time
+
+        t = time.time()
+        if self._timing["since"] is None:
+            self._timing["since"] = t
+        out = super().get_batch_samples(epoch_iterator, num_batches, *args, **kwargs)
+        self._timing["data_s"] += time.time() - t
+        self._timing["steps"] += 1
+        return out
 
     def log(self, logs: dict[str, float], *args, **kwargs) -> None:
         # Memory next to the loss: a run killed by the OS (exit code -9) otherwise leaves no clue.
+        # sec_per_step vs data_wait_s: if they are close, the data stream is the bottleneck.
+        import time
+
         logs = {**logs, **memory_stats()}
+        tm = self._timing
+        if "loss" in logs and tm["steps"] and tm["since"] is not None:
+            logs["sec_per_step"] = round((time.time() - tm["since"]) / tm["steps"], 1)
+            logs["data_wait_s"] = round(tm["data_s"] / tm["steps"], 1)
+            self._timing = {"data_s": 0.0, "steps": 0, "since": None}
         super().log(logs, *args, **kwargs)
 
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval", **gen_kwargs):

@@ -52,10 +52,19 @@ def pick_device(requested: str | None = None) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def native_bf16() -> bool:
+    """True only on GPUs with bf16 hardware (Ampere, compute capability 8, and newer).
+
+    torch.cuda.is_bf16_supported() also says True on a T4 because bf16 can be emulated there,
+    but emulated bf16 is several times slower than fp16: the Kaggle trial ran at ~130 s/step.
+    """
+    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8
+
+
 def pick_dtype(device: torch.device) -> torch.dtype:
     if device.type != "cuda":
         return torch.float32
-    return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    return torch.bfloat16 if native_bf16() else torch.float16
 
 
 class Transcriber:

@@ -96,3 +96,18 @@ def test_training_stream_shuffles_one_file_at_a_time(monkeypatch):
     assert len(calls) == 2
     if "max_buffer_input_shards" in inspect.signature(original).parameters:
         assert all(c.get("max_buffer_input_shards") == 1 for c in calls)
+
+
+def test_time_limit_callback_saves_and_stops_after_deadline():
+    import time
+
+    from transformers import TrainerControl, TrainerState
+
+    from sa_asr.training import TimeLimitCallback
+
+    state, control = TrainerState(), TrainerControl()
+    state.global_step = 7
+    assert not TimeLimitCallback(time.time() + 3600).on_step_end(None, state, control).should_training_stop
+    cb = TimeLimitCallback(time.time() - 1)
+    out = cb.on_step_end(None, state, TrainerControl())
+    assert out.should_save and out.should_training_stop and cb.hit

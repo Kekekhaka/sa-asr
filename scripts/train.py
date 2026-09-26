@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import time
 from pathlib import Path
 
 import torch
@@ -26,13 +27,14 @@ from datasets import concatenate_datasets
 from transformers import Seq2SeqTrainingArguments, WhisperForConditionalGeneration, WhisperProcessor
 from transformers.utils import logging as transformers_logging
 
-from sa_asr.backends import META_FILE
+from sa_asr.backends import META_FILE, native_bf16
 from sa_asr.config import PROJECT_ROOT, load_languages, load_yaml, select_languages
 from sa_asr.data import build_eval_set, check_access
 from sa_asr.training import (
     EvalFeatureDataset,
     LabelBuilder,
     WhisperCollator,
+    TimeLimitCallback,
     WhisperWERTrainer,
     build_train_stream,
     find_resume_checkpoint,
@@ -58,10 +60,13 @@ def parse_args():
     ap.add_argument("--grad-accum", type=int, help="Override gradient_accumulation_steps")
     ap.add_argument("--resume", action="store_true", help="Resume from the last checkpoint (local, else --hub-repo)")
     ap.add_argument("--hub-repo", help="Private HF repo <user>/<name> to push checkpoints and the final model to")
+    ap.add_argument("--max-hours", type=float,
+                    help="Save and stop after this many hours (default: training.max_runtime_hours, e.g. 11 on Kaggle)")
     return ap.parse_args()
 
 
 def main():
+    started = time.time()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     transformers_logging.set_verbosity_error()  # per-batch generation warnings flood the output
@@ -71,8 +76,10 @@ def main():
     tcfg = dict(cfg["training"])
     if args.max_steps:
         tcfg["max_steps"] = args.max_steps
-        tcfg["eval_steps"] = min(tcfg["eval_steps"], args.max_steps)
-        tcfg["save_steps"] = min(tcfg["save_steps"], args.max_steps)
+        # Short runs: evaluate and save at the halfway point too, not only at the very end.
+        half = max(1, args.max_steps // 2)
+        tcfg["eval_steps"] = min(tcfg["eval_steps"], half)
+        tcfg["save_steps"] = min(tcfg["save_steps"], half)
     if args.batch_size:
         tcfg["per_device_train_batch_size"] = tcfg["per_device_eval_batch_size"] = args.batch_size
     if args.grad_accum:
@@ -167,7 +174,9 @@ def main():
 
     # --- trainer ---------------------------------------------------------------------
     cuda = torch.cuda.is_available()
-    bf16 = cuda and torch.cuda.is_bf16_supported()
+    bf16 = native_bf16()  # fp16 on a T4: its bf16 is emulated and several times slower
+    if cuda:
+        log.info("Mixed precision: %s on %s", "bf16" if bf16 else "fp16", torch.cuda.get_device_name())
     training_args = Seq2SeqTrainingArguments(
         output_dir=str(out_dir),
         max_steps=tcfg["max_steps"],
@@ -215,7 +224,25 @@ def main():
         wer_processor=processor,
         wer_batch_size=tcfg.get("per_device_eval_batch_size", 16),
     )
+    max_hours = args.max_hours or tcfg.get("max_runtime_hours")
+    time_limit = TimeLimitCallback(started + max_hours * 3600) if max_hours else None
+    if time_limit:
+        trainer.add_callback(time_limit)
+        log.info("Will save and stop after %.1f h if not finished", max_hours)
     trainer.train(resume_from_checkpoint=str(resume_from) if resume_from else None)
+    if time_limit and time_limit.hit:
+        ckpt = find_resume_checkpoint(out_dir, None)
+        if args.hub_repo and ckpt is not None:
+            # Upload synchronously: the Trainer's own push runs in the background and may not
+            # finish before the platform stops the machine.
+            from huggingface_hub import HfApi
+
+            HfApi().upload_folder(repo_id=args.hub_repo, folder_path=str(ckpt), path_in_repo="last-checkpoint",
+                                  commit_message=f"checkpoint at step {trainer.state.global_step} (runtime limit)")
+            log.info("Uploaded %s to %s/last-checkpoint", ckpt.name, args.hub_repo)
+        log.warning("Stopped at the runtime limit (step %d of %d). Run the same command again with --resume "
+                    "to continue; the final model is not written yet.", trainer.state.global_step, tcfg["max_steps"])
+        return
 
     # --- save ------------------------------------------------------------------------
     final = out_dir / "final"

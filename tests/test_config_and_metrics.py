@@ -193,3 +193,39 @@ def test_header_duration_reads_length_without_decoding(tmp_path):
         sf.write(buf, np.zeros(48_000 * 3, np.float32), 48_000, format=fmt)
         assert header_duration({"bytes": buf.getvalue()}) == pytest.approx(3.0)
     assert header_duration({"bytes": b"not audio"}) is None
+
+
+def test_t4_trains_in_fp16_not_emulated_bf16(monkeypatch):
+    # torch says a T4 "supports" bf16 (by emulation); training in it ran at ~130 s/step.
+    import torch
+
+    from sa_asr.backends import native_bf16, pick_dtype
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 5))  # T4
+    assert not native_bf16()
+    assert pick_dtype(torch.device("cuda")) == torch.float16
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 0))  # A100
+    assert native_bf16()
+
+
+def test_files_containing_picks_files_by_language_statistics(tmp_path):
+    # Lwazi's files are sorted by language; each language stream should only read its own.
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from fsspec.implementations.dirfs import DirFileSystem
+    from fsspec.implementations.local import LocalFileSystem
+
+    from sa_asr.data import files_containing
+
+    root = tmp_path / "datasets" / "org" / "repo" / "data"
+    root.mkdir(parents=True)
+    for i, langs in enumerate([["afr", "eng"], ["eng", "nbl"], ["zul", "zul"]]):
+        pq.write_table(pa.table({"language": langs, "text": ["x", "y"]}), root / f"train-0000{i}-of-00003.parquet",
+                       row_group_size=1)
+    fs = DirFileSystem(path=str(tmp_path), fs=LocalFileSystem())
+    pick = lambda value: [u.rsplit("/", 1)[-1][:11] for u in files_containing("org/repo", "train", "language", value, fs=fs)]
+    assert pick("eng") == ["train-00000", "train-00001"]
+    assert pick("zul") == ["train-00002"]
+    assert files_containing("org/repo", "train", "language", "xho", fs=fs) is None  # unknown: stream everything

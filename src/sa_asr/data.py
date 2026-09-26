@@ -21,6 +21,7 @@ import logging
 import zlib
 from collections import Counter
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import soundfile as sf
@@ -170,12 +171,49 @@ def header_duration(audio: dict) -> float | None:
         return None
 
 
+@lru_cache(maxsize=None)
+def files_containing(repo: str, split: str, column: str, value: str, fs=None) -> tuple[str, ...] | None:
+    """The Parquet files of a split that can hold rows with column == value, as hf:// URLs.
+
+    Decided from the row-group min/max statistics in each file's footer, so no audio is
+    downloaded. Lwazi's 16 files are sorted by language and each language sits in one or
+    two of them; without this every language stream downloads all 16 and discards ~90%.
+    Returns None when it cannot be decided (then the caller streams everything).
+    """
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfFileSystem
+
+    try:
+        fs = fs or HfFileSystem()
+        files = sorted(fs.glob(f"datasets/{repo}/**/{split}-*.parquet"))
+        keep = []
+        for f in files:
+            with fs.open(f, block_size=2**16) as fh:
+                md = pq.ParquetFile(fh).metadata
+            for i in range(md.num_row_groups):
+                rg = md.row_group(i)
+                cols = [rg.column(j) for j in range(rg.num_columns) if rg.column(j).path_in_schema == column]
+                st = cols[0].statistics if cols else None
+                if st is None or not st.has_min_max:
+                    return None
+                if st.min <= value <= st.max:
+                    keep.append(f)
+                    break
+        if not keep:
+            return None
+        log.info("%s %s: %s=%s is in %d of %d files", repo, split, column, value, len(keep), len(files))
+        return tuple(f"hf://{f}" for f in keep)
+    except Exception as e:  # an optimisation only; never stop a run over it
+        log.warning("%s: could not pick files by %s (%s); streaming all files", repo, column, e)
+        return None
+
+
 def load_corpus(corpus: str, lang: Language, split: str, max_duration_s: float | None = None) -> IterableDataset:
     """Stream one (corpus, language, split) in the common schema.
 
-    For multilingual corpora this filters one language out of the shared stream. That
-    reads the other languages' rows too, but a mixed stream is worse: Lwazi's shards are
-    sorted by language, so a mixed stream would feed the model one language at a time.
+    For multilingual corpora this filters one language out of the shared stream, reading
+    only the files that hold that language (see files_containing). A mixed stream would be
+    worse: Lwazi's shards are sorted by language, so it would feed one language at a time.
 
     max_duration_s drops longer clips here, from the file header, before they are decoded
     or buffered. Over a third of Swivuriso clips exceed Whisper's 30 s window.
@@ -192,7 +230,11 @@ def load_corpus(corpus: str, lang: Language, split: str, max_duration_s: float |
     repo_split = spec.splits[repo_split]
 
     config = None if spec.language_column else lang.corpora[corpus]
-    ds = load_dataset(spec.repo, config, split=repo_split, streaming=True)
+    files = files_containing(spec.repo, repo_split, spec.language_column, lang.corpora[corpus]) if spec.language_column else None
+    if files:
+        ds = load_dataset("parquet", data_files={repo_split: list(files)}, split=repo_split, streaming=True)
+    else:
+        ds = load_dataset(spec.repo, config, split=repo_split, streaming=True)
     # Before any filter/map: otherwise `datasets` decodes audio itself (needs torchcodec).
     ds = ds.cast_column("audio", Audio(decode=False))
     if spec.language_column:
