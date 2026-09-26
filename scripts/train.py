@@ -37,6 +37,7 @@ from sa_asr.training import (
     build_train_stream,
     find_resume_checkpoint,
     make_example_fn,
+    start_memory_monitor,
 )
 
 log = logging.getLogger("train")
@@ -64,6 +65,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     transformers_logging.set_verbosity_error()  # per-batch generation warnings flood the output
+    start_memory_monitor()
     args = parse_args()
     cfg = load_yaml(args.config)
     tcfg = dict(cfg["training"])

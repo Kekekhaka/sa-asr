@@ -29,6 +29,8 @@ scripts/
   train.py              fine-tune -> outputs/<name>/final (--hub-repo: also push to HF)
   hub_sync.py           push/pull a results folder to a private HF repo
   package.py            build sa-asr.zip, or push the code to a private HF repo
+  run_stage.py          one pipeline stage with GPU-appropriate settings (what the notebooks call)
+  diagnose_memory.py    RAM profile of the training data pipeline, without a model
 notebooks/
   colab_sa_asr.ipynb    runs all of the above on a Colab GPU (project on Google Drive)
   colab_no_drive.ipynb  same, where Google Drive is blocked: state is kept in private HF repos

@@ -162,6 +162,23 @@ def memory_stats() -> dict[str, float]:
     return stats
 
 
+def start_memory_monitor(interval_s: float = 30.0) -> None:
+    """Log memory every interval_s from a background thread, from startup to exit.
+
+    The per-step log only starts after the first logging_steps; a run killed for using too
+    much RAM before that point would otherwise leave no trace of where the memory went.
+    """
+    import threading
+    import time
+
+    def loop():
+        while True:
+            log.info("memory: %s", memory_stats())
+            time.sleep(interval_s)
+
+    threading.Thread(target=loop, name="memory-monitor", daemon=True).start()
+
+
 class WhisperCollator:
     """Stacks log-mel features and pads labels with -100 (ignored by the loss)."""
 

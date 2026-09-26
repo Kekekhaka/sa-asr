@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import zlib
 from collections import Counter
 from dataclasses import dataclass
@@ -193,7 +194,12 @@ def load_corpus(corpus: str, lang: Language, split: str, max_duration_s: float |
     repo_split = spec.splits[repo_split]
 
     config = None if spec.language_column else lang.corpora[corpus]
-    ds = load_dataset(spec.repo, config, split=repo_split, streaming=True)
+    # Experiment knob: rows per Arrow record batch when reading Parquet (default: a whole
+    # row group). Smaller batches bound how much audio is materialized at once.
+    extra = {}
+    if os.environ.get("SA_ASR_PARQUET_BATCH_SIZE"):
+        extra["batch_size"] = int(os.environ["SA_ASR_PARQUET_BATCH_SIZE"])
+    ds = load_dataset(spec.repo, config, split=repo_split, streaming=True, **extra)
     # Before any filter/map: otherwise `datasets` decodes audio itself (needs torchcodec).
     ds = ds.cast_column("audio", Audio(decode=False))
     if spec.language_column:
