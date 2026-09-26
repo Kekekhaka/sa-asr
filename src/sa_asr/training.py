@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import zlib
 from pathlib import Path
@@ -99,10 +100,22 @@ def build_train_stream(
 
     Clips longer than max_duration_s are dropped before shuffling (see load_corpus).
     """
+    # datasets >= 5 fills a shuffle buffer from up to 10 files of a stream at once, each
+    # open file holding its read buffers. With ~23 streams, and Swivuriso files of ~700 MB,
+    # that took a 30 GB Kaggle machine out of memory in under two minutes. One file at a
+    # time per stream keeps RAM flat; the file order is still shuffled, and mixing many
+    # streams already interleaves sources.
+    one_file = {}
+    if "max_buffer_input_shards" in inspect.signature(IterableDataset.shuffle).parameters:
+        one_file["max_buffer_input_shards"] = 1
+    import datasets
+
+    log.info("datasets %s: shuffle buffers read %s", datasets.__version__,
+             "one file at a time" if one_file else "one file at a time (library default)")
     parts, weights = [], []
     for corpus, lang, weight in streams:
         stream = load_corpus(corpus, lang, "train", max_duration_s=max_duration_s)
-        parts.append(stream.shuffle(seed=seed, buffer_size=shuffle_buffer))
+        parts.append(stream.shuffle(seed=seed, buffer_size=shuffle_buffer, **one_file))
         weights.append(weight)
     probs = [w / sum(weights) for w in weights]
     mixed = interleave_datasets(parts, probabilities=probs, seed=seed, stopping_strategy="all_exhausted")

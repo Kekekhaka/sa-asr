@@ -62,3 +62,37 @@ def test_find_resume_checkpoint_none_without_checkpoints(tmp_path):
     from sa_asr.training import find_resume_checkpoint
 
     assert find_resume_checkpoint(tmp_path, None) is None
+
+
+def test_training_stream_shuffles_one_file_at_a_time(monkeypatch):
+    # datasets >= 5 otherwise reads up to 10 files per stream at once, which ran a 30 GB
+    # machine out of memory; see build_train_stream.
+    import inspect
+
+    from datasets import IterableDataset
+
+    import sa_asr.training as training
+    from sa_asr.data import COMMON_FEATURES
+
+    def fake_corpus(corpus, lang, split, max_duration_s=None):
+        rows = [{"audio": {"bytes": b"", "path": None}, "utt_id": str(i), "speaker": "", "text": "x", "lang": lang.code,
+                 "corpus": corpus} for i in range(3)]
+        return IterableDataset.from_generator(lambda: iter(rows), features=COMMON_FEATURES)
+
+    import functools
+
+    calls = []
+    original = IterableDataset.shuffle
+
+    @functools.wraps(original)  # keeps the real signature visible to inspect.signature
+    def spy(self, *args, **kwargs):
+        calls.append(kwargs)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(training, "load_corpus", fake_corpus)
+    monkeypatch.setattr(IterableDataset, "shuffle", spy)
+    zul = load_languages()["zul"]
+    training.build_train_stream([("nchlt", zul, 1.0), ("lwazi", zul, 1.0)], lambda ex: ex, seed=0, shuffle_buffer=4)
+    assert len(calls) == 2
+    if "max_buffer_input_shards" in inspect.signature(original).parameters:
+        assert all(c.get("max_buffer_input_shards") == 1 for c in calls)

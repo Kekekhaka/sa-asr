@@ -1,7 +1,7 @@
 """Measure what the training data pipeline costs in RAM, without loading a model.
 
     python scripts/diagnose_memory.py --seconds 150
-    SA_ASR_PARQUET_BATCH_SIZE=16 python scripts/diagnose_memory.py --seconds 150
+    python scripts/diagnose_memory.py --seconds 90 --corpora swivuriso --trace
 
 1. Prints each corpus's Parquet layout (rows per row group, MB per row group, bytes per
    row) for the first training file of each language.
@@ -54,13 +54,21 @@ def main():
     ap.add_argument("--config", default="configs/train_lora.yaml")
     ap.add_argument("--langs", nargs="*", default=["zul", "xho"])
     ap.add_argument("--seconds", type=int, default=150)
-    ap.add_argument("--min-free-gb", type=float, default=4.0)
+    ap.add_argument("--min-free-gb", type=float, default=6.0)
+    ap.add_argument("--corpora", nargs="*", help="Only these corpora (default: all with weight > 0)")
+    ap.add_argument("--trace", action="store_true", help="Track Python allocations; print the biggest holders at the end")
     args = ap.parse_args()
+    if args.trace:
+        import tracemalloc
+
+        tracemalloc.start(8)
 
     cfg = load_yaml(PROJECT_ROOT / args.config)
     registry = load_languages()
     languages = select_languages(registry, args.langs)
     corpora = [c for c, w in cfg["corpora"].items() if w and w > 0 and check_access(c)]
+    if args.corpora:
+        corpora = [c for c in corpora if c in args.corpora]
 
     print("== Parquet layout (first training file per corpus/language)", flush=True)
     for corpus in corpora:
@@ -82,9 +90,29 @@ def main():
 
     import os
 
+    import datasets
+
     print(f"== Streaming {[(c, l.code) for c, l, _ in streams]}, shuffle_buffer={cfg.get('shuffle_buffer', 64)}, "
-          f"SA_ASR_PARQUET_BATCH_SIZE={os.environ.get('SA_ASR_PARQUET_BATCH_SIZE', 'default')}", flush=True)
+          f"datasets {datasets.__version__}", flush=True)
     t0, count, stop = time.time(), [0], threading.Event()
+
+    def holders():
+        """Where the memory is: PyArrow's pool, Python objects in total, and the top Python allocation sites."""
+        import pyarrow as pa
+
+        print(f"  arrow_pool_gb={pa.total_allocated_bytes() / 2**30:.2f}", flush=True)
+        if not args.trace:
+            return
+        import tracemalloc
+
+        snap = tracemalloc.take_snapshot()
+        stats = snap.statistics("traceback")
+        total = sum(st.size for st in stats)
+        print(f"  python_objects_gb={total / 2**30:.2f}; biggest allocation sites:", flush=True)
+        for st in stats[:6]:
+            print(f"    {st.size / 2**30:.2f} GB in {st.count} blocks", flush=True)
+            for line in st.traceback.format()[-8:]:
+                print(f"      {line}", flush=True)
 
     def report():
         while not stop.is_set():
@@ -92,9 +120,11 @@ def main():
             print(f"  t={time.time() - t0:4.0f}s examples={count[0]:5d} {m}", flush=True)
             if m["ram_free_gb"] < args.min_free_gb:
                 print(f"  ABORT: free RAM below {args.min_free_gb} GB", flush=True)
+                holders()
                 os._exit(3)
             if time.time() - t0 > args.seconds + 120:  # the main loop only checks time per example
                 print(f"  STOP: time limit reached with {count[0]} examples (stream is slow to start)", flush=True)
+                holders()
                 os._exit(0)
             stop.wait(15)
 
@@ -104,6 +134,7 @@ def main():
         if time.time() - t0 > args.seconds:
             break
     stop.set()
+    holders()
     print(f"== Done: {count[0]} examples in {time.time() - t0:.0f}s, final {memory_stats()}", flush=True)
 
 
