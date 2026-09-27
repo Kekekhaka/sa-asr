@@ -72,12 +72,12 @@ def test_training_stream_shuffles_one_file_at_a_time(monkeypatch):
     from datasets import IterableDataset
 
     import sa_asr.training as training
-    from sa_asr.data import COMMON_FEATURES
+    from sa_asr.data import TRAIN_FEATURES
 
-    def fake_corpus(corpus, lang, split, max_duration_s=None):
+    def fake_corpus(corpus, lang, split, max_duration_s=None, seed=0):
         rows = [{"audio": {"bytes": b"", "path": None}, "utt_id": str(i), "speaker": "", "text": "x", "lang": lang.code,
                  "corpus": corpus} for i in range(3)]
-        return IterableDataset.from_generator(lambda: iter(rows), features=COMMON_FEATURES)
+        return IterableDataset.from_generator(lambda: iter(rows), features=TRAIN_FEATURES)
 
     import functools
 
@@ -89,7 +89,7 @@ def test_training_stream_shuffles_one_file_at_a_time(monkeypatch):
         calls.append(kwargs)
         return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(training, "load_corpus", fake_corpus)
+    monkeypatch.setattr(training, "stream_corpus", fake_corpus)
     monkeypatch.setattr(IterableDataset, "shuffle", spy)
     zul = load_languages()["zul"]
     training.build_train_stream([("nchlt", zul, 1.0), ("lwazi", zul, 1.0)], lambda ex: ex, seed=0, shuffle_buffer=4)

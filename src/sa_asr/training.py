@@ -15,7 +15,7 @@ from transformers import Seq2SeqTrainer, TrainerCallback, WhisperProcessor
 
 from .audio import SAMPLE_RATE, augment, decode_audio, duration_seconds
 from .config import Language
-from .data import CORPORA, eval_row_audio, load_corpus
+from .data import CORPORA, eval_row_audio, stream_corpus
 from .metrics import score
 from .text import clean_transcript, normalize_for_scoring
 
@@ -98,7 +98,7 @@ def build_train_stream(
 ) -> IterableDataset:
     """Mix (corpus, language, weight) streams by weight into one endless training stream.
 
-    Clips longer than max_duration_s are dropped before shuffling (see load_corpus).
+    Clips longer than max_duration_s are dropped before shuffling (see read_parquet_rows).
     """
     # datasets >= 5 fills a shuffle buffer from up to 10 files of a stream at once, each
     # open file holding its read buffers. With ~23 streams, and Swivuriso files of ~700 MB,
@@ -114,7 +114,7 @@ def build_train_stream(
              "one file at a time" if one_file else "one file at a time (library default)")
     parts, weights = [], []
     for corpus, lang, weight in streams:
-        stream = load_corpus(corpus, lang, "train", max_duration_s=max_duration_s)
+        stream = stream_corpus(corpus, lang, "train", max_duration_s=max_duration_s, seed=seed)
         parts.append(stream.shuffle(seed=seed, buffer_size=shuffle_buffer, **one_file))
         weights.append(weight)
     probs = [w / sum(weights) for w in weights]

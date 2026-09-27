@@ -76,6 +76,9 @@ def main():
     ap.add_argument("--hf-user", required=True)
     args = ap.parse_args()
 
+    build = PROJECT_ROOT / "BUILD.txt"
+    print(f"Code build: {build.read_text().strip() if build.exists() else 'unknown (no BUILD.txt: an old package)'}",
+          flush=True)
     s = gpu_settings()
     print(f"Stage {args.stage}: GPU {s['gpu_gb']:.0f} GB -> batch '{s['batch']}', {s['eval_samples']} test utterances/set",
           flush=True)

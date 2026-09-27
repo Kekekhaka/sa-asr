@@ -229,3 +229,57 @@ def test_files_containing_picks_files_by_language_statistics(tmp_path):
     assert pick("eng") == ["train-00000", "train-00001"]
     assert pick("zul") == ["train-00002"]
     assert files_containing("org/repo", "train", "language", "xho", fs=fs) is None  # unknown: stream everything
+
+
+def test_parse_hf_url():
+    from sa_asr.data import parse_hf_url
+
+    assert parse_hf_url("hf://datasets/dsfsi/lwazi@abc123/data/train-0.parquet") == ("dsfsi/lwazi", "abc123", "data/train-0.parquet")
+    assert parse_hf_url("hf://datasets/o/r@refs%2Fconvert%2Fparquet/x/y.parquet") == ("o/r", "refs/convert/parquet", "x/y.parquet")
+    assert parse_hf_url("hf://datasets/o/r/zul/train-00000-of-00007.parquet") == ("o/r", None, "zul/train-00000-of-00007.parquet")
+
+
+def test_stream_corpus_reads_one_language_and_cleans_up(tmp_path, monkeypatch):
+    # Lwazi-like files: two languages in separate row groups, one clip too long for Whisper.
+    import io
+    import shutil
+    from pathlib import Path
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    import sa_asr.data as data
+    from sa_asr.config import load_languages
+
+    def flac(seconds):
+        buf = io.BytesIO()
+        sf.write(buf, np.zeros(int(8000 * seconds), np.float32), 8000, format="FLAC")
+        return buf.getvalue()
+
+    src = tmp_path / "src"
+    src.mkdir()
+    rows = [("isizulu", 1.0, "z1"), ("isizulu", 40.0, "z_long"), ("isixhosa", 1.0, "x1"), ("isixhosa", 1.0, "x2")]
+    table = pa.table({
+        "audio": [{"bytes": flac(d), "path": f"{i}.flac"} for _, d, i in rows],
+        "text": [f"text {i}" for _, _, i in rows],
+        "filename": [i for _, _, i in rows],
+        "speaker": ["s1"] * len(rows),
+        "language": [lang for lang, _, _ in rows],
+    })
+    pq.write_table(table, src / "train-0.parquet", row_group_size=2)
+    downloads = []
+
+    def fake_download(url, dest_dir):
+        downloads.append(url)
+        return Path(shutil.copy(src / url.rsplit("/", 1)[-1], dest_dir))
+
+    stream_dir = tmp_path / "stream"
+    stream_dir.mkdir()
+    monkeypatch.setenv("SA_ASR_STREAM_DIR", str(stream_dir))
+    monkeypatch.setattr(data, "download_file", fake_download)
+    monkeypatch.setattr(data, "corpus_files", lambda corpus, lang, split: ["hf://datasets/o/r/data/train-0.parquet"])
+
+    out = list(data.stream_corpus("lwazi", load_languages()["zul"], "train", max_duration_s=30.0, seed=1))
+    assert [r["utt_id"] for r in out] == ["z1"]  # other language and the 40 s clip dropped
+    assert out[0]["lang"] == "zul" and out[0]["corpus"] == "lwazi" and out[0]["audio"]["bytes"][:4] == b"fLaC"
+    assert downloads and not any(stream_dir.iterdir())  # the local copy is deleted after use

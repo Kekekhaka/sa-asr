@@ -11,3 +11,4 @@ wandb/
 *.zip
 logs/
 *.log
+BUILD.txt
