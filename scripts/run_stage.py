@@ -6,7 +6,7 @@ Stages live here rather than in the notebook, so a new stage or a fix only needs
 code upload, not a new notebook.
 
     smoke     tests + tiny end-to-end run
-    diagnose  RAM profile of the training data pipeline (no model), ~5 min
+    diagnose  RAM and speed of the full 11-language data pipeline (no model), ~8 min
     baseline  score existing models on the test sets
     trial     500 training steps on isiZulu + isiXhosa
     train     full training run (resumes from the last pushed checkpoint)
@@ -49,7 +49,7 @@ def commands(stage: str, user: str, s: dict) -> list[tuple[str, dict]]:
                 (f"{py} scripts/evaluate.py --config configs/eval_smoke.yaml", {}),
                 (f"{py} scripts/train.py --config configs/train_smoke.yaml", {})]
     if stage == "diagnose":
-        return [(f"{py} scripts/diagnose_memory.py --seconds 150", {})]
+        return [(f"{py} scripts/diagnose_memory.py --seconds 300 --langs all", {})]  # the full-training mix
     if stage == "baseline":
         return [(f"{py} scripts/evaluate.py --config configs/eval_baseline.yaml --models {s['baseline_models']} "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
