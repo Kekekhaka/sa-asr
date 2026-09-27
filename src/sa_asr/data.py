@@ -332,7 +332,9 @@ def parse_hf_url(url: str) -> tuple[str, str | None, str]:
 def download_file(url: str, dest_dir: Path) -> Path:
     """Download one repo file to local disk (with retries: a long run must not die on a blip)."""
     from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import disable_progress_bars
 
+    disable_progress_bars()  # one bar per file otherwise floods the notebook log
     repo_id, revision, path = parse_hf_url(url)
     for attempt in range(4):
         try:
