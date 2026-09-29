@@ -217,6 +217,34 @@ class TimeLimitCallback(TrainerCallback):
         return control
 
 
+class PeriodicSaveCallback(TrainerCallback):
+    """Save (and so push to the Hub) at least every `every_s` seconds.
+
+    Step-based saves come every ~4.5 h on a T4. If the platform kills the run in between
+    (Kaggle's weekly GPU quota running out, a disconnect), everything since the last save
+    is lost; this caps the loss at `every_s`.
+    """
+
+    def __init__(self, every_s: float):
+        import time
+
+        self.every_s = every_s
+        self.last = time.time()
+
+    def on_save(self, args, state, control, **kwargs):
+        import time
+
+        self.last = time.time()
+
+    def on_step_end(self, args, state, control, **kwargs):
+        import time
+
+        if time.time() - self.last >= self.every_s:
+            log.info("%.1f h since the last checkpoint: saving at step %d", self.every_s / 3600, state.global_step)
+            control.should_save = True
+        return control
+
+
 class WhisperCollator:
     """Stacks log-mel features and pads labels with -100 (ignored by the loss)."""
 

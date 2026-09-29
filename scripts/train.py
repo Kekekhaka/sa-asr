@@ -34,6 +34,7 @@ from sa_asr.training import (
     EvalFeatureDataset,
     LabelBuilder,
     WhisperCollator,
+    PeriodicSaveCallback,
     TimeLimitCallback,
     WhisperWERTrainer,
     build_train_stream,
@@ -229,6 +230,10 @@ def main():
     if time_limit:
         trainer.add_callback(time_limit)
         log.info("Will save and stop after %.1f h if not finished", max_hours)
+    every_h = tcfg.get("checkpoint_every_hours")
+    if every_h:
+        trainer.add_callback(PeriodicSaveCallback(every_h * 3600))
+        log.info("Will also save a checkpoint at least every %.1f h", every_h)
     trainer.train(resume_from_checkpoint=str(resume_from) if resume_from else None)
     if time_limit and time_limit.hit:
         ckpt = find_resume_checkpoint(out_dir, None)

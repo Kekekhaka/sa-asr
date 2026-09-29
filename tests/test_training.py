@@ -136,3 +136,16 @@ def test_poor_set_explained_and_predictions_saved(tmp_path, caplog):
     WhisperWERTrainer._save_predictions(fake, [{"corpus": "nchlt", "lang": "ven", "ref": "ḓo", "hyp": "do"}])
     saved = (tmp_path / "eval_predictions" / "step-00500.jsonl").read_text(encoding="utf-8")
     assert json.loads(saved) == {"corpus": "nchlt", "lang": "ven", "ref": "ḓo", "hyp": "do"}
+
+
+def test_periodic_save_callback_saves_after_interval():
+    from transformers import TrainerControl, TrainerState
+
+    from sa_asr.training import PeriodicSaveCallback
+
+    cb = PeriodicSaveCallback(every_s=3600)
+    assert not cb.on_step_end(None, TrainerState(), TrainerControl()).should_save
+    cb.last -= 3601  # an hour has passed without a save
+    assert cb.on_step_end(None, TrainerState(), TrainerControl()).should_save
+    cb.on_save(None, TrainerState(), TrainerControl())
+    assert not cb.on_step_end(None, TrainerState(), TrainerControl()).should_save

@@ -66,6 +66,7 @@ training:
   report_to: none     # or tensorboard / wandb
   seed: 42
   max_runtime_hours: 11.0   # save + stop before Kaggle's 12 h limit; resume continues
+  checkpoint_every_hours: 2.0   # also save between the 500-step saves: a quota cut-off loses <= 2 h
 
 validation:
   cache_dir: data/eval_cache
