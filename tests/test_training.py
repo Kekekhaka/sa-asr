@@ -111,3 +111,28 @@ def test_time_limit_callback_saves_and_stops_after_deadline():
     cb = TimeLimitCallback(time.time() - 1)
     out = cb.on_step_end(None, state, TrainerControl())
     assert out.should_save and out.should_training_stop and cb.hit
+
+
+def test_fold_diacritics_for_diagnosis():
+    from sa_asr.training import fold_diacritics
+
+    assert fold_diacritics("vha ḓo ṱoḓa ṋamusi") == "vha do toda namusi"
+    assert fold_diacritics("ke šomiša") == "ke somisa"
+
+
+def test_poor_set_explained_and_predictions_saved(tmp_path, caplog):
+    import json
+    import logging
+    from types import SimpleNamespace
+
+    from sa_asr.training import WhisperWERTrainer
+
+    with caplog.at_level(logging.INFO, logger="sa_asr.training"):
+        WhisperWERTrainer._explain_poor_set("nchlt", "ven", 0.8, ["vha do ya"], ["vha ḓo ya"])
+    assert "0.0% ignoring diacritics" in caplog.text and "vha do ya  =>  vha ḓo ya" in caplog.text
+
+    fake = SimpleNamespace(args=SimpleNamespace(output_dir=str(tmp_path), push_to_hub=False, hub_model_id=None),
+                           state=SimpleNamespace(global_step=500))
+    WhisperWERTrainer._save_predictions(fake, [{"corpus": "nchlt", "lang": "ven", "ref": "ḓo", "hyp": "do"}])
+    saved = (tmp_path / "eval_predictions" / "step-00500.jsonl").read_text(encoding="utf-8")
+    assert json.loads(saved) == {"corpus": "nchlt", "lang": "ven", "ref": "ḓo", "hyp": "do"}

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import logging
+import unicodedata
 import zlib
 from pathlib import Path
 from typing import Any
@@ -289,7 +291,7 @@ class WhisperWERTrainer(Seq2SeqTrainer):
         device = self.args.device
         amp_dtype = torch.bfloat16 if self.args.bf16 else (torch.float16 if self.args.fp16 else None)
         fe = self.wer_processor.feature_extractor
-        all_refs, all_hyps, out = [], [], {}
+        all_refs, all_hyps, out, records = [], [], {}, []
         for (corpus, lang), rows in self.wer_sets.items():
             refs, hyps = [], []
             for start in range(0, len(rows), self.wer_batch_size):
@@ -308,11 +310,49 @@ class WhisperWERTrainer(Seq2SeqTrainer):
                 refs += batch["text"]
             s = score(refs, hyps)
             out[f"{prefix}_wer_{corpus}_{lang.code}"] = round(s["wer"], 4)
+            records += [{"corpus": corpus, "lang": lang.code, "ref": r, "hyp": h} for r, h in zip(refs, hyps)]
+            if s["wer"] > 0.6:
+                self._explain_poor_set(corpus, lang.code, s["wer"], refs, hyps)
             all_refs += refs
             all_hyps += hyps
         overall = score(all_refs, all_hyps)
         out[f"{prefix}_wer"] = round(overall["wer"], 4)
         out[f"{prefix}_cer"] = round(overall["cer"], 4)
+        self._save_predictions(records)
         if was_training:
             model.train()
         return out
+
+    @staticmethod
+    def _explain_poor_set(corpus: str, lang: str, wer: float, refs: list[str], hyps: list[str]) -> None:
+        """Log what goes wrong on a poor set: WER without diacritics (a spelling-convention
+        mismatch shows up as a big drop) and a few reference/output pairs."""
+        folded = score([fold_diacritics(r) for r in refs], [fold_diacritics(h) for h in hyps])["wer"]
+        log.info("%s/%s: WER %.1f%%, %.1f%% ignoring diacritics. Examples (reference => model):",
+                 corpus, lang, 100 * wer, 100 * folded)
+        pairs = [(normalize_for_scoring(r), normalize_for_scoring(h)) for r, h in zip(refs, hyps)]
+        for r, h in [p for p in pairs if p[0] != p[1]][:4]:
+            log.info("    %s  =>  %s", r, h)
+
+    def _save_predictions(self, records: list[dict]) -> None:
+        """Every reference/output pair of this evaluation: to output_dir/eval_predictions and,
+        when pushing to the Hub, to eval_predictions/ in the model repo. Never fatal."""
+        name = f"step-{self.state.global_step:05d}.jsonl"
+        try:
+            path = Path(self.args.output_dir) / "eval_predictions" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8")
+            if self.args.push_to_hub and self.args.hub_model_id:
+                from huggingface_hub import HfApi
+
+                HfApi().upload_file(path_or_fileobj=str(path), path_in_repo=f"eval_predictions/{name}",
+                                    repo_id=self.args.hub_model_id, commit_message=f"Eval predictions {name}")
+        except Exception as e:
+            log.warning("Could not save eval predictions (%s)", e)
+
+
+def fold_diacritics(text: str) -> str:
+    """Strip combining marks (ḓ -> d, š -> s). For diagnosis only: in these languages
+    diacritics distinguish words, so scoring keeps them."""
+    decomposed = unicodedata.normalize("NFD", text)
+    return unicodedata.normalize("NFC", "".join(c for c in decomposed if unicodedata.category(c) != "Mn"))
