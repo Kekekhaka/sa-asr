@@ -28,7 +28,7 @@ from transformers import Seq2SeqTrainingArguments, WhisperForConditionalGenerati
 from transformers.utils import logging as transformers_logging
 
 from sa_asr.backends import META_FILE, native_bf16
-from sa_asr.config import PROJECT_ROOT, load_languages, load_yaml, select_languages
+from sa_asr.config import PROJECT_ROOT, load_languages, load_yaml, quiet_progress_bars, select_languages
 from sa_asr.data import build_eval_set, check_access
 from sa_asr.training import (
     EvalFeatureDataset,
@@ -71,6 +71,7 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     transformers_logging.set_verbosity_error()  # per-batch generation warnings flood the output
+    quiet_progress_bars()
     start_memory_monitor()
     args = parse_args()
     cfg = load_yaml(args.config)

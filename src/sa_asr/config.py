@@ -67,3 +67,15 @@ def select_languages(langs: dict[str, Language], codes: str | list[str] | None) 
     if unknown:
         raise ValueError(f"Unknown language codes {unknown}; known: {sorted(langs)}")
     return [langs[c] for c in codes]
+
+
+def quiet_progress_bars() -> None:
+    """Turn off download / model-loading / dataset progress bars. In a saved Kaggle run each
+    bar update is a log line, and they bury the training log (one model load is ~1,000 lines)."""
+    import datasets
+    import huggingface_hub.utils
+    from transformers.utils import logging as transformers_logging
+
+    transformers_logging.disable_progress_bar()
+    datasets.disable_progress_bars()
+    huggingface_hub.utils.disable_progress_bars()
