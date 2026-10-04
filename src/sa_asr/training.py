@@ -245,6 +245,64 @@ class PeriodicSaveCallback(TrainerCallback):
         return control
 
 
+class StallWatchdog(TrainerCallback):
+    """End the run if training stops making progress for `timeout_s`.
+
+    A hang (e.g. a deadlocked data stream) blocks the training loop, so step-end callbacks
+    such as TimeLimitCallback never run and the platform bills the GPU until its hard limit
+    (Kaggle: 12 h). A background thread watches for heartbeats instead (every step, log,
+    save and evaluation batch); when they stop it prints every thread's stack, so the log
+    shows where it hung, and exits the process.
+    """
+
+    def __init__(self, timeout_s: float, poll_s: float = 60.0, on_stall=None):
+        import time
+
+        self.timeout_s = timeout_s
+        self.poll_s = poll_s
+        self.on_stall = on_stall or self._exit
+        self.last = time.time()
+        self.thread = None
+
+    def beat(self, *args, **kwargs):
+        import time
+
+        self.last = time.time()
+
+    on_step_end = on_log = on_save = on_evaluate = on_prediction_step = beat
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        import threading
+
+        self.beat()
+        if self.thread is None:
+            self.thread = threading.Thread(target=self._watch, name="stall-watchdog", daemon=True)
+            self.thread.start()
+
+    def _watch(self):
+        import time
+
+        while True:
+            time.sleep(self.poll_s)
+            idle = time.time() - self.last
+            if idle >= self.timeout_s:
+                self.on_stall(idle)
+                return
+
+    @staticmethod
+    def _exit(idle: float) -> None:
+        import faulthandler
+        import os
+        import sys
+
+        log.error("No training progress for %.0f min: the run is stuck. Stacks of all threads follow; "
+                  "exiting so the GPU quota is not used up. Run again with --resume.", idle / 60)
+        sys.stdout.flush()
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        sys.stderr.flush()
+        os._exit(3)
+
+
 class WhisperCollator:
     """Stacks log-mel features and pads labels with -100 (ignored by the loss)."""
 
@@ -336,6 +394,7 @@ class WhisperWERTrainer(Seq2SeqTrainer):
                     )
                 hyps += self.wer_processor.batch_decode(ids, skip_special_tokens=True)
                 refs += batch["text"]
+                self.control = self.callback_handler.on_prediction_step(self.args, self.state, self.control)
             s = score(refs, hyps)
             out[f"{prefix}_wer_{corpus}_{lang.code}"] = round(s["wer"], 4)
             records += [{"corpus": corpus, "lang": lang.code, "ref": r, "hyp": h} for r, h in zip(refs, hyps)]

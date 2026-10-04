@@ -149,3 +149,21 @@ def test_periodic_save_callback_saves_after_interval():
     assert cb.on_step_end(None, TrainerState(), TrainerControl()).should_save
     cb.on_save(None, TrainerState(), TrainerControl())
     assert not cb.on_step_end(None, TrainerState(), TrainerControl()).should_save
+
+
+def test_stall_watchdog_fires_only_without_heartbeats():
+    import time
+
+    from transformers import TrainerControl, TrainerState
+
+    from sa_asr.training import StallWatchdog
+
+    stalls = []
+    dog = StallWatchdog(timeout_s=0.3, poll_s=0.05, on_stall=stalls.append)
+    dog.on_train_begin(None, TrainerState(), TrainerControl())
+    for _ in range(8):  # steady progress: no stall
+        time.sleep(0.1)
+        dog.on_step_end(None, TrainerState(), TrainerControl())
+    assert not stalls
+    time.sleep(0.6)  # progress stops
+    assert len(stalls) == 1 and stalls[0] >= 0.3
