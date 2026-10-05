@@ -131,6 +131,14 @@ def test_poor_set_explained_and_predictions_saved(tmp_path, caplog):
         WhisperWERTrainer._explain_poor_set("nchlt", "ven", 0.8, ["vha do ya"], ["vha ḓo ya"])
     assert "0.0% ignoring diacritics" in caplog.text and "vha do ya  =>  vha ḓo ya" in caplog.text
 
+    caplog.clear()  # the runaway output is listed first, even though it is not the first pair
+    refs = ["sawubona", "ngiyabonga kakhulu", "unjani", ""]
+    hyps = ["sawubona", "ngiyabonga", "unjani " + "unjani " * 50, "noise"]
+    with caplog.at_level(logging.INFO, logger="sa_asr.training"):
+        WhisperWERTrainer._explain_poor_set("lwazi", "zul", 0.9, refs, hyps)
+    lines = [l for l in caplog.text.splitlines() if "  =>  " in l]
+    assert "50: unjani" in lines[0] and "1: ngiyabonga kakhulu" in caplog.text and "1:   =>  noise" in caplog.text
+
     fake = SimpleNamespace(args=SimpleNamespace(output_dir=str(tmp_path), push_to_hub=False, hub_model_id=None),
                            state=SimpleNamespace(global_step=500))
     WhisperWERTrainer._save_predictions(fake, [{"corpus": "nchlt", "lang": "ven", "ref": "ḓo", "hyp": "do"}])

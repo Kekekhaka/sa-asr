@@ -413,13 +413,18 @@ class WhisperWERTrainer(Seq2SeqTrainer):
     @staticmethod
     def _explain_poor_set(corpus: str, lang: str, wer: float, refs: list[str], hyps: list[str]) -> None:
         """Log what goes wrong on a poor set: WER without diacritics (a spelling-convention
-        mismatch shows up as a big drop) and a few reference/output pairs."""
+        mismatch shows up as a big drop) and the reference/output pairs with the most word
+        errors (one runaway, repeating output can dominate a 32-clip set)."""
         folded = score([fold_diacritics(r) for r in refs], [fold_diacritics(h) for h in hyps])["wer"]
-        log.info("%s/%s: WER %.1f%%, %.1f%% ignoring diacritics. Examples (reference => model):",
+        log.info("%s/%s: WER %.1f%%, %.1f%% ignoring diacritics. Worst examples (word errors: reference => model):",
                  corpus, lang, 100 * wer, 100 * folded)
         pairs = [(normalize_for_scoring(r), normalize_for_scoring(h)) for r, h in zip(refs, hyps)]
-        for r, h in [p for p in pairs if p[0] != p[1]][:4]:
-            log.info("    %s  =>  %s", r, h)
+        errors = [round(score([r], [h])["wer"] * len(r.split())) if r else len(h.split()) for r, h in pairs]
+        worst = sorted(range(len(pairs)), key=lambda i: -errors[i])[:4]
+        for i in worst:
+            if errors[i]:
+                r, h = pairs[i]
+                log.info("    %d: %s  =>  %s", errors[i], r, h if len(h) <= 300 else h[:300] + " ...")
 
     def _save_predictions(self, records: list[dict]) -> None:
         """Every reference/output pair of this evaluation: to output_dir/eval_predictions and,

@@ -41,7 +41,7 @@ def gpu_settings() -> dict:
             "baseline_models": "whisper-large-v3-turbo dsfsi-anv-multilingual-turbo mms-1b-all"}
 
 
-def commands(stage: str, user: str, s: dict) -> list[tuple[str, dict]]:
+def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> list[tuple[str, dict]]:
     results, model_repo = f"{user}/sa-asr-results", f"{user}/sa-asr-whisper-lora"
     py = sys.executable
     if stage == "smoke":
@@ -57,7 +57,9 @@ def commands(stage: str, user: str, s: dict) -> list[tuple[str, dict]]:
         return [(f"{py} scripts/train.py --config configs/train_lora.yaml {s['batch']} --max-steps 500 --langs zul xho "
                  f"--output-dir outputs/trial --hub-repo {user}/sa-asr-trial --resume", {})]
     if stage == "train":
-        return [(f"{py} scripts/train.py --config configs/train_lora.yaml {s['batch']} --hub-repo {model_repo} --resume", {})]
+        limit = f" --max-hours {max_hours}" if max_hours else ""  # less GPU quota left than a full session
+        return [(f"{py} scripts/train.py --config configs/train_lora.yaml {s['batch']} --hub-repo {model_repo} --resume"
+                 f"{limit}", {})]
     if stage == "compare":
         cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
         cfg["models"].append({"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"})
@@ -74,6 +76,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("stage", choices=STAGES)
     ap.add_argument("--hf-user", required=True)
+    ap.add_argument("--max-hours", type=float, help="train: save and stop after this many hours (default 11)")
     args = ap.parse_args()
 
     build = PROJECT_ROOT / "BUILD.txt"
@@ -82,7 +85,7 @@ def main():
     s = gpu_settings()
     print(f"Stage {args.stage}: GPU {s['gpu_gb']:.0f} GB -> batch '{s['batch']}', {s['eval_samples']} test utterances/set",
           flush=True)
-    for cmd, env in commands(args.stage, args.hf_user, s):
+    for cmd, env in commands(args.stage, args.hf_user, s, args.max_hours):
         print(f">>> {' '.join(f'{k}={v}' for k, v in env.items())} {cmd}".strip(), flush=True)
         code = subprocess.run(shlex.split(cmd), cwd=PROJECT_ROOT, env={**os.environ, **env}).returncode
         if code != 0:
