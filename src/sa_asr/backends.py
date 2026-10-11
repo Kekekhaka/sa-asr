@@ -167,20 +167,24 @@ class WhisperTranscriber(Transcriber):
         return True
 
     @torch.inference_mode()
-    def detect_language(self, audio: np.ndarray, candidates: list[Language]) -> dict[str, float]:
-        """Probability of each candidate language, from Whisper's first decoding step.
+    def detect_languages(self, audios: list[np.ndarray], candidates: list[Language]) -> list[dict[str, float]]:
+        """Probability of each candidate language per clip (up to 30 s each), from Whisper's
+        first decoding step.
 
         Only meaningful for models trained by this project (language_mode proxy), where each
         proxy token stands for a South African language; the softmax is restricted to the
         candidates, so the answer is always one of them.
         """
         tok = self.processor.tokenizer
-        feats = self.processor.feature_extractor(audio[: 30 * SAMPLE_RATE], sampling_rate=SAMPLE_RATE, return_tensors="pt")
-        sot = torch.tensor([[tok.convert_tokens_to_ids("<|startoftranscript|>")]], device=self.device)
+        feats = self.processor.feature_extractor(
+            [a[: 30 * SAMPLE_RATE] for a in audios], sampling_rate=SAMPLE_RATE, return_tensors="pt"
+        )
+        sot = torch.full((len(audios), 1), tok.convert_tokens_to_ids("<|startoftranscript|>"), device=self.device)
         logits = self.model(input_features=feats.input_features.to(self.device, self.dtype), decoder_input_ids=sot).logits
         ids = [tok.convert_tokens_to_ids(f"<|{self._language_for(lang)}|>") for lang in candidates]
-        probs = torch.softmax(logits[0, -1, ids].float(), dim=-1).tolist()
-        return dict(sorted(zip((lang.code for lang in candidates), probs), key=lambda kv: -kv[1]))
+        probs = torch.softmax(logits[:, -1, ids].float(), dim=-1).tolist()
+        codes = [lang.code for lang in candidates]
+        return [dict(sorted(zip(codes, p), key=lambda kv: -kv[1])) for p in probs]
 
     @torch.inference_mode()
     def transcribe(self, audios: list[np.ndarray], lang: Language | None) -> list[str]:

@@ -72,3 +72,20 @@ def translate(texts: list[str], lang: str, max_new_tokens: int = 400, num_beams:
         for (i, _), text in zip(batch, tok.batch_decode(ids, skip_special_tokens=True)):
             out[i] = text.strip()
     return out
+
+
+def translate_segments(segments: list[dict]) -> list[str]:
+    """English text per transcript segment ({"text", "language"}), each translated from its
+    own language, so mixed-language recordings translate correctly. English segments are
+    kept as they are; segments in a language with no translation model come back empty."""
+    out = [""] * len(segments)
+    by_lang: dict[str, list[int]] = {}
+    for i, seg in enumerate(segments):
+        if seg["language"] == "eng":
+            out[i] = seg["text"]
+        elif can_translate(seg["language"]):
+            by_lang.setdefault(seg["language"], []).append(i)
+    for lang, idx in by_lang.items():
+        for i, text in zip(idx, translate([segments[i]["text"] for i in idx], lang)):
+            out[i] = text
+    return out
