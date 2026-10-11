@@ -26,7 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-app = ["streamlit>=1.40"]
+app = ["streamlit>=1.40", "sentencepiece>=0.2"]  # sentencepiece: the Tshivenda translation model's tokenizer
 
 [tool.setuptools.packages.find]
 where = ["src"]
