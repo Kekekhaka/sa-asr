@@ -11,3 +11,11 @@ try:
     truststore.inject_into_ssl()
 except ImportError:
     pass
+
+# Large Hub files download through hf_xet, whose own (Rust) TLS ignores the OS store above and
+# stalls at 0 bytes behind such a proxy. On the Windows laptop, use plain Python downloads instead.
+import os as _os
+import sys as _sys
+
+if _sys.platform == "win32":
+    _os.environ.setdefault("HF_HUB_DISABLE_XET", "1")

@@ -13,7 +13,9 @@ import torch
 
 from sa_asr.audio import duration_seconds
 from sa_asr.config import PROJECT_ROOT, load_languages
+from sa_asr.feedback import FEEDBACK_DIR, save_correction, summary
 from sa_asr.inference import load_audio, load_transcriber, resolve_model, transcribe_audio
+from sa_asr.translate import ROUTES, can_translate, translate
 
 UPLOAD_TYPES = ["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac", "webm", "mp4"]
 DEFAULT_FINETUNED = PROJECT_ROOT / "outputs" / "whisper-turbo-sa-lora" / "final"
@@ -101,9 +103,12 @@ if st.button("Transcribe", type="primary", disabled=source is None, width="stret
             st.stop()
     model.num_beams = num_beams
     with st.spinner(f"Transcribing {fmt_time(duration_seconds(wav))} of audio…"):
-        st.session_state["result"] = transcribe_audio(
-            model, wav, registry, None if lang_choice == "auto" else lang_choice
-        )
+        result = transcribe_audio(model, wav, registry, None if lang_choice == "auto" else lang_choice)
+    # The audio and the model's first answer are kept for corrections (what it got wrong).
+    st.session_state.update(
+        result=result, wav=wav, model_used=model_input.strip(), rid=st.session_state.get("rid", 0) + 1,
+        first_prediction=(result["language"], result["text"]),
+    )
 
 result = st.session_state.get("result")
 if result:
@@ -125,3 +130,53 @@ if result:
         with st.expander(f"Segments ({len(result['segments'])})"):
             for seg in result["segments"]:
                 st.markdown(f"`{fmt_time(seg['start'])}–{fmt_time(seg['end'])}` {seg['text']}")
+
+    # --- English translation -------------------------------------------------------------
+    rid = st.session_state["rid"]
+    lang = result["language"]
+    if result["text"] and can_translate(lang):
+        st.subheader("English translation")
+        if ROUTES[lang].approximate:
+            st.caption(f"No translation model covers {registry[lang].name}; translated as isiZulu, so it is approximate.")
+        translation = st.session_state.get("translation")
+        if translation and translation[0] == rid:
+            st.text_area("Translation", translation[1], height=150, label_visibility="collapsed")
+            st.download_button("Download translation .txt", translation[1].encode("utf-8"),
+                               file_name="translation.txt", mime="text/plain")
+        elif st.button("Translate to English"):
+            with st.spinner("Translating (the first time downloads and loads the translation model)…"):
+                try:
+                    parts = translate([seg["text"] for seg in result["segments"]], lang)
+                except Exception as e:
+                    st.error(f"Couldn't translate: {e}")
+                    st.stop()
+            st.session_state["translation"] = (rid, " ".join(p for p in parts if p))
+            st.rerun()
+
+    # --- corrections -------------------------------------------------------------------
+    with st.expander("Wrong language or words? Correct it"):
+        st.caption(
+            "Pick the right language and fix the text. Saved corrections (audio + text) are kept in "
+            "`data/feedback/` and can be used to fine-tune the model further. Only save recordings you "
+            "have permission to use."
+        )
+        fix_options = trained_langs if finetuned else list(registry)
+        fix_lang = st.selectbox(
+            "Correct language", fix_options, index=fix_options.index(lang) if lang in fix_options else 0,
+            format_func=lambda c: registry[c].name, key=f"fix_lang_{rid}",
+        )
+        if fix_lang != lang and st.button(f"Transcribe again as {registry[fix_lang].name}"):
+            with st.spinner(f"Transcribing as {registry[fix_lang].name}…"):
+                model = get_model(model_ref, finetuned)
+                model.num_beams = num_beams
+                redo = transcribe_audio(model, st.session_state["wav"], registry, fix_lang)
+            st.session_state.update(result=redo, rid=rid + 1)  # keeps first_prediction
+            st.rerun()
+        fix_text = st.text_area("Correct transcript", result["text"], height=150, key=f"fix_text_{rid}")
+        if st.button("Save correction", type="primary", disabled=not fix_text.strip()):
+            first_lang, first_text = st.session_state["first_prediction"]
+            save_correction(st.session_state["wav"], fix_lang, fix_text, predicted_lang=first_lang,
+                            predicted_text=first_text, model=st.session_state["model_used"])
+            stats = summary()
+            st.success(f"Saved. {stats['count']} corrections so far ({stats['hours'] * 60:.0f} min of audio) "
+                       f"in {FEEDBACK_DIR.relative_to(PROJECT_ROOT)}.")
