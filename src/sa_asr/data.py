@@ -110,6 +110,17 @@ CORPORA: dict[str, CorpusSpec] = {
         license="CC-BY-3.0",
         validation_holdout=0.05,
     ),
+    # OpenSLR 32 (NWU + Google): studio-quality multi-speaker read speech recorded for TTS,
+    # Afrikaans / Sesotho / Setswana / isiXhosa. Train split only (no held-out speakers).
+    "openslr32": CorpusSpec(
+        name="openslr32",
+        repo="deepdml/openslr-32-hq-SA-languages",
+        text_column="transcript",
+        id_column="file_id",
+        speaker_column=None,
+        splits={"train": "train"},
+        license="CC-BY-SA-4.0",
+    ),
     # Lwazi: telephone speech, ~200 speakers per language. This mirror has 9 languages
     # (no Afrikaans or English) in one config.
     # The dataset card states no licence; check the original (SADiLaR) terms before

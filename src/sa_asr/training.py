@@ -165,6 +165,29 @@ def find_resume_checkpoint(out_dir: Path, hub_repo: str | None) -> Path | None:
     return None
 
 
+def load_init_adapter(model, init_adapter: str, languages: list[Language]):
+    """Wrap `model` with a LoRA adapter trained earlier by this project, trainable again.
+
+    init_adapter: local folder or Hub repo (as pushed by train.py --hub-repo). Its language
+    tokens must match languages.yaml, or the learned language mapping would be scrambled.
+    """
+    from peft import PeftModel
+
+    from .backends import META_FILE
+    from .inference import resolve_model
+
+    path, trained = resolve_model(init_adapter)
+    if trained is None:
+        raise ValueError(f"init_adapter {init_adapter} is not a model trained by this project (no {META_FILE})")
+    tokens = json.loads((Path(path) / META_FILE).read_text(encoding="utf-8"))["whisper_tokens"]
+    clash = {l.code: (tokens[l.code], l.whisper_token) for l in languages
+             if l.code in tokens and tokens[l.code] != l.whisper_token}
+    if clash:
+        raise ValueError(f"init_adapter {init_adapter} uses other language tokens (adapter, languages.yaml): {clash}")
+    log.info("Starting from adapter %s (%s)", init_adapter, path)
+    return PeftModel.from_pretrained(model, path, is_trainable=True)
+
+
 def memory_stats() -> dict[str, float]:
     """RAM used by this process and its dataloader workers, RAM still free, and GPU peak (GB)."""
     import psutil
@@ -315,11 +338,33 @@ class WhisperCollator:
         return {"input_features": input_features, "labels": labels}
 
 
+def lid_weighted_loss(logits: torch.Tensor, labels: torch.Tensor, lid_weight: float) -> torch.Tensor:
+    """Transcript CE (positions 1..) + lid_weight x language-token CE (position 0).
+
+    Each part is a mean over its own targets, so the language decision is not diluted by
+    transcript length. labels[:, 0] is the language token (see LabelBuilder).
+    """
+    logits = logits.float()
+    vocab = logits.shape[-1]
+    text = torch.nn.functional.cross_entropy(logits[:, 1:].reshape(-1, vocab), labels[:, 1:].reshape(-1),
+                                             ignore_index=-100)
+    lid = torch.nn.functional.cross_entropy(logits[:, 0], labels[:, 0], ignore_index=-100)
+    return text + lid_weight * lid
+
+
 class WhisperWERTrainer(Seq2SeqTrainer):
     """Seq2SeqTrainer that also reports WER/CER per (corpus, language) at every evaluation.
 
     Eval loss alone can keep improving while transcripts stop improving; WER is what we
     select checkpoints on (metric_for_best_model: wer).
+
+    lid_loss_weight > 0 trains language identification explicitly. In the plain loss the
+    language token is one target among all tokens of the batch (well under 1% with long
+    Swivuriso transcripts), and a 6000-step run barely learned it: the model transcribed
+    well when told the language but could hardly name it. Here the loss is
+        mean CE over transcript tokens  +  lid_loss_weight * mean CE of the language token,
+    so per clip the language decision weighs as much as the whole transcript.
+    With lid_token_ids, evaluation also reports language-identification accuracy.
     """
 
     def __init__(
@@ -328,13 +373,29 @@ class WhisperWERTrainer(Seq2SeqTrainer):
         wer_sets: dict[tuple[str, Language], Dataset] | None = None,
         wer_processor: WhisperProcessor | None = None,
         wer_batch_size: int = 16,
+        lid_token_ids: dict[str, int] | None = None,
+        lid_loss_weight: float = 0.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.wer_sets = wer_sets or {}
         self.wer_processor = wer_processor
         self.wer_batch_size = wer_batch_size
+        self.lid_token_ids = lid_token_ids or {}
+        self.lid_loss_weight = lid_loss_weight
+        if lid_loss_weight:
+            # Our loss is a plain mean: let the Trainer scale it for gradient accumulation.
+            self.model_accepts_loss_kwargs = False
         self._timing = {"data_s": 0.0, "steps": 0, "since": None}
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if not self.lid_loss_weight:
+            return super().compute_loss(model, inputs, return_outputs=return_outputs,
+                                        num_items_in_batch=num_items_in_batch)
+        labels = inputs["labels"]
+        outputs = model(input_features=inputs["input_features"], labels=labels)
+        loss = lid_weighted_loss(outputs.logits, labels, self.lid_loss_weight)
+        return (loss, outputs) if return_outputs else loss
 
     def get_batch_samples(self, epoch_iterator, num_batches, *args, **kwargs):
         # Time spent waiting for the data stream, so a slow step can be pinned on data or GPU.
@@ -378,12 +439,22 @@ class WhisperWERTrainer(Seq2SeqTrainer):
         amp_dtype = torch.bfloat16 if self.args.bf16 else (torch.float16 if self.args.fp16 else None)
         fe = self.wer_processor.feature_extractor
         all_refs, all_hyps, out, records = [], [], {}, []
+        lid_codes = list(self.lid_token_ids)
+        lid_ids = torch.tensor([self.lid_token_ids[c] for c in lid_codes], device=device)
+        sot = self.wer_processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+        lid_hits: list[tuple[str, str]] = []  # (true, detected)
         for (corpus, lang), rows in self.wer_sets.items():
             refs, hyps = [], []
             for start in range(0, len(rows), self.wer_batch_size):
                 batch = rows[start : start + self.wer_batch_size]
                 wavs = [eval_row_audio({"flac": b}) for b in batch["flac"]]
                 feats = fe(wavs, sampling_rate=SAMPLE_RATE, return_tensors="pt", return_attention_mask=True)
+                if lid_codes:  # which of the trained languages the model puts first
+                    with torch.autocast(device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
+                        logits = model(input_features=feats.input_features.to(device),
+                                       decoder_input_ids=torch.full((len(wavs), 1), sot, device=device)).logits
+                    best = logits[:, -1, lid_ids].argmax(-1).tolist()
+                    lid_hits += [(lang.code, lid_codes[i]) for i in best]
                 with torch.autocast(device.type, dtype=amp_dtype, enabled=amp_dtype is not None):
                     ids = model.generate(
                         input_features=feats.input_features.to(device),
@@ -405,6 +476,14 @@ class WhisperWERTrainer(Seq2SeqTrainer):
         overall = score(all_refs, all_hyps)
         out[f"{prefix}_wer"] = round(overall["wer"], 4)
         out[f"{prefix}_cer"] = round(overall["cer"], 4)
+        if lid_hits:
+            from .lid import family_of
+
+            out[f"{prefix}_lid_acc"] = round(sum(t == d for t, d in lid_hits) / len(lid_hits), 4)
+            out[f"{prefix}_lid_family_acc"] = round(sum(family_of(t) == family_of(d) for t, d in lid_hits) / len(lid_hits), 4)
+            for code in sorted({t for t, _ in lid_hits}):
+                mine = [d for t, d in lid_hits if t == code]
+                out[f"{prefix}_lid_{code}"] = round(sum(d == code for d in mine) / len(mine), 4)
         self._save_predictions(records)
         if was_training:
             model.train()

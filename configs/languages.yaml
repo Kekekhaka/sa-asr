@@ -29,7 +29,7 @@ languages:
     whisper_token: af
     whisper_native: true
     mms_adapter: afr
-    corpora: {nchlt: afr, fleurs: af_za}
+    corpora: {nchlt: afr, fleurs: af_za, openslr32: af_za}
   zul:
     name: isiZulu
     whisper_token: sn
@@ -41,7 +41,7 @@ languages:
     whisper_token: sw
     whisper_native: false
     mms_adapter: xho
-    corpora: {nchlt: xho, swivuriso: xho, fleurs: xh_za, lwazi: isixhosa}
+    corpora: {nchlt: xho, swivuriso: xho, fleurs: xh_za, lwazi: isixhosa, openslr32: xh_za}
   nso:
     name: Sepedi
     whisper_token: ha
@@ -53,13 +53,13 @@ languages:
     whisper_token: so
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: sot, swivuriso: sot, lwazi: sesotho}
+    corpora: {nchlt: sot, swivuriso: sot, lwazi: sesotho, openslr32: st_za}
   tsn:
     name: Setswana
     whisper_token: mg
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: tsn, swivuriso: tsn, lwazi: setswana}
+    corpora: {nchlt: tsn, swivuriso: tsn, lwazi: setswana, openslr32: tn_za}
   tso:
     name: Xitsonga
     whisper_token: am

@@ -1,0 +1,72 @@
+# Round 2: continue from the first model (KekeCode/sa-asr-whisper-lora) to fix language
+# identification and add data.
+#   python scripts/train.py --config configs/train_lora_v2.yaml --hub-repo <user>/sa-asr-whisper-lora-v2 --resume
+#
+# Why: the `lid` stage (2026-10-13) found the first model transcribes well when told the
+# language (WER ~24%) but barely learned to name it (56.7% exact, 95.5% right family;
+# isiZulu, Sepedi, Setswana and siSwati never chosen). The language token was <1% of the
+# training loss; lid_loss_weight makes it count per clip as much as the transcript.
+# Also new: FLEURS train (af/zu/xh/nso read sentences; its test split stays the benchmark)
+# and OpenSLR 32 (studio af/st/tn/xh), and more weight on Swivuriso.
+
+base_model: openai/whisper-large-v3-turbo
+init_adapter: KekeCode/sa-asr-whisper-lora   # start from the first model's LoRA weights
+output_dir: outputs/whisper-turbo-sa-lora-v2
+
+languages: all
+
+corpora:
+  nchlt: 1.0
+  swivuriso: 3.0      # was 2.0: the dsfsi model is 4-8 WER points ahead on Swivuriso
+  nchlt_eng: 1.0
+  lwazi: 1.0
+  fleurs: 1.0         # was 0: train split only; FLEURS test is no longer fully "unseen" for af/zu/xh/nso
+  openslr32: 0.5      # small (a few hours per language), few speakers: keep its share modest
+
+language_weights:
+  nso: 2.0
+  ssw: 2.0
+  afr: 2.0
+  eng: 1.5
+
+text: clean
+max_duration_s: 30
+max_label_tokens: 440
+shuffle_buffer: 64
+
+augment:
+  telephone_prob: 0.3
+  noise_prob: 0.15
+
+lora:                 # must match the first model's adapter (it is loaded, not rebuilt)
+  enabled: true
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, out_proj, fc1, fc2]
+
+training:
+  max_steps: 1200     # ~10 h on a T4 at ~29 s/step: one Kaggle session
+  lid_loss_weight: 1.0
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-5   # half the first run: refine, don't overwrite
+  warmup_steps: 100
+  lr_scheduler_type: linear
+  weight_decay: 0.0
+  gradient_checkpointing: true
+  eval_steps: 300
+  save_steps: 300
+  save_total_limit: 3
+  logging_steps: 10
+  dataloader_num_workers: 0
+  report_to: none
+  seed: 43            # a different data order from the first run
+  max_runtime_hours: 11.0
+  checkpoint_every_hours: 2.0
+  stall_timeout_minutes: 40
+
+validation:
+  cache_dir: data/eval_cache
+  max_samples_per_set: 32

@@ -29,7 +29,7 @@ from transformers.utils import logging as transformers_logging
 
 from sa_asr.backends import META_FILE, native_bf16
 from sa_asr.config import PROJECT_ROOT, load_languages, load_yaml, quiet_progress_bars, select_languages
-from sa_asr.data import build_eval_set, check_access
+from sa_asr.data import CORPORA, build_eval_set, check_access
 from sa_asr.training import (
     EvalFeatureDataset,
     LabelBuilder,
@@ -40,6 +40,7 @@ from sa_asr.training import (
     WhisperWERTrainer,
     build_train_stream,
     find_resume_checkpoint,
+    load_init_adapter,
     make_example_fn,
     start_memory_monitor,
 )
@@ -146,6 +147,9 @@ def main():
     cache_dir = resolve(vcfg.get("cache_dir", "data/eval_cache"))
     wer_sets = {}
     for corpus, lang, _ in streams:
+        spec = CORPORA[corpus]
+        if "validation" not in spec.splits and spec.validation_holdout is None:
+            continue  # train-only corpus (e.g. openslr32): nothing held out to validate on
         wer_sets[(corpus, lang)] = build_eval_set(
             corpus, lang, "validation", cache_dir,
             max_samples=vcfg.get("max_samples_per_set", 32), seed=seed, max_duration_s=max_dur,
@@ -160,7 +164,11 @@ def main():
     model.config.forced_decoder_ids = None
 
     lora = cfg.get("lora", {})
-    if lora.get("enabled", True):
+    init_adapter = cfg.get("init_adapter")
+    if init_adapter:
+        model = load_init_adapter(model, init_adapter, [registry[c] for c in trained_langs])
+        model.print_trainable_parameters()
+    elif lora.get("enabled", True):
         from peft import LoraConfig, get_peft_model
 
         model = get_peft_model(
@@ -226,6 +234,8 @@ def main():
         wer_sets=wer_sets,
         wer_processor=processor,
         wer_batch_size=tcfg.get("per_device_eval_batch_size", 16),
+        lid_token_ids=labels.lang_ids,  # report language-identification accuracy at each evaluation
+        lid_loss_weight=float(tcfg.get("lid_loss_weight", 0.0)),
     )
     max_hours = args.max_hours or tcfg.get("max_runtime_hours")
     time_limit = TimeLimitCallback(started + max_hours * 3600) if max_hours else None
@@ -269,6 +279,8 @@ def main():
         "augment": aug,
         "best_metric_wer": trainer.state.best_metric,
         "best_checkpoint": trainer.state.best_model_checkpoint,
+        "init_adapter": cfg.get("init_adapter"),
+        "lid_loss_weight": tcfg.get("lid_loss_weight", 0.0),
     }
     (final / META_FILE).write_text(json.dumps(meta, indent=2), encoding="utf-8")
     log.info("Saved %s (best validation WER %s)", final, trainer.state.best_metric)

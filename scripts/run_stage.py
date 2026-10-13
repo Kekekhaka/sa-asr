@@ -26,7 +26,8 @@ import yaml
 
 from sa_asr.config import PROJECT_ROOT
 
-STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid", "report"]
+STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
+          "train_v2", "compare_v2", "lid_v2", "report"]
 
 
 def gpu_settings() -> dict:
@@ -67,9 +68,23 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
             yaml.safe_dump(cfg, f, sort_keys=False)
         return [(f"{py} scripts/evaluate.py --config configs/eval_compare.yaml --models sa-turbo-lora "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
-    if stage == "lid":  # language-detection accuracy of the trained model, on the same test clips
-        return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {model_repo} "
+    if stage == "train_v2":  # round 2: continue from the first model, with LID loss + more data
+        limit = f" --max-hours {max_hours}" if max_hours else ""
+        return [(f"{py} scripts/train.py --config configs/train_lora_v2.yaml {s['batch']} "
+                 f"--hub-repo {model_repo}-v2 --resume{limit}", {})]
+    if stage == "compare_v2":
+        cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
+        cfg["models"].append({"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"})
+        cfg["models"].append({"name": "sa-turbo-lora-v2", "type": "whisper", "model": f"{model_repo}-v2",
+                              "language_mode": "proxy"})
+        with open(PROJECT_ROOT / "configs/eval_compare.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+        return [(f"{py} scripts/evaluate.py --config configs/eval_compare.yaml --models sa-turbo-lora-v2 "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage in ("lid", "lid_v2"):  # language-detection accuracy of the trained model, on the same test clips
+        repo, out = (model_repo, "results/lid") if stage == "lid" else (f"{model_repo}-v2", "results/lid_v2")
+        return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {repo} "
+                 f"--output-dir {out} --max-samples {s['eval_samples']} --sync-repo {results}", {})]
     if stage == "report":
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {})]
     raise ValueError(stage)
