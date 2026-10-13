@@ -6,6 +6,8 @@
 # language (WER ~24%) but barely learned to name it (56.7% exact, 95.5% right family;
 # isiZulu, Sepedi, Setswana and siSwati never chosen). The language token was <1% of the
 # training loss; lid_loss_weight makes it count per clip as much as the transcript.
+# Second finding (2026-10-13, after a first v2 attempt stayed at 0% for those four): the
+# proxy tokens themselves were indistinguishable vectors; see lora.train_language_tokens.
 # Also new: FLEURS train (af/zu/xh/nso read sentences; its test split stays the benchmark)
 # and OpenSLR 32 (studio af/st/tn/xh), and more weight on Swivuriso.
 
@@ -38,8 +40,12 @@ augment:
   telephone_prob: 0.3
   noise_prob: 0.15
 
-lora:                 # must match the first model's adapter (it is loaded, not rebuilt)
+lora:                 # r/alpha/targets come from the first model's adapter (its weights are loaded)
   enabled: true
+  # Whisper's tokens for rare languages, which we borrow as proxies, are near-identical
+  # vectors (cosine 1.00 for sn/ha/so/mg/ln/lb): nothing could tell Sepedi from Sesotho.
+  # Training these 11 embedding rows (tied to the output layer) gives each its own vector.
+  train_language_tokens: true
   r: 32
   alpha: 64
   dropout: 0.05

@@ -165,13 +165,17 @@ def find_resume_checkpoint(out_dir: Path, hub_repo: str | None) -> Path | None:
     return None
 
 
-def load_init_adapter(model, init_adapter: str, languages: list[Language]):
+def load_init_adapter(model, init_adapter: str, languages: list[Language], trainable_token_ids: list[int] | None = None):
     """Wrap `model` with a LoRA adapter trained earlier by this project, trainable again.
 
     init_adapter: local folder or Hub repo (as pushed by train.py --hub-repo). Its language
     tokens must match languages.yaml, or the learned language mapping would be scrambled.
+
+    trainable_token_ids: also train these rows of the (tied) token embedding, i.e. the
+    language tokens. The adapter is then rebuilt with the same LoRA settings plus trainable
+    tokens, and the earlier LoRA weights are copied in.
     """
-    from peft import PeftModel
+    from peft import LoraConfig, PeftModel, get_peft_model, load_peft_weights, set_peft_model_state_dict
 
     from .backends import META_FILE
     from .inference import resolve_model
@@ -185,7 +189,25 @@ def load_init_adapter(model, init_adapter: str, languages: list[Language]):
     if clash:
         raise ValueError(f"init_adapter {init_adapter} uses other language tokens (adapter, languages.yaml): {clash}")
     log.info("Starting from adapter %s (%s)", init_adapter, path)
-    return PeftModel.from_pretrained(model, path, is_trainable=True)
+    if not trainable_token_ids:
+        return PeftModel.from_pretrained(model, path, is_trainable=True)
+
+    old = json.loads((Path(path) / "adapter_config.json").read_text(encoding="utf-8"))
+    cfg = LoraConfig(r=old["r"], lora_alpha=old["lora_alpha"], lora_dropout=old.get("lora_dropout", 0.0),
+                     target_modules=old["target_modules"], bias=old.get("bias", "none"),
+                     trainable_token_indices={"embed_tokens": sorted(trainable_token_ids)})
+    model = get_peft_model(model, cfg)
+    # The old adapter has no trainable-token entries: start them from the new model's own
+    # values (no change to the embedding), and take every LoRA weight from the old adapter.
+    from peft import get_peft_model_state_dict
+
+    state = {**get_peft_model_state_dict(model), **load_peft_weights(path)}
+    result = set_peft_model_state_dict(model, state)
+    missing_lora = [k for k in result.missing_keys if "lora_" in k]
+    if missing_lora or result.unexpected_keys:
+        raise ValueError(f"init_adapter weights did not fit: missing {missing_lora[:3]}, unexpected {result.unexpected_keys[:3]}")
+    log.info("Language-token embeddings are trainable: %d tokens", len(trainable_token_ids))
+    return model
 
 
 def memory_stats() -> dict[str, float]:

@@ -94,6 +94,14 @@ def main():
     seed = tcfg.get("seed", 42)
 
     resume_from = find_resume_checkpoint(out_dir, args.hub_repo) if args.resume else None
+    train_lang_tokens = bool(cfg.get("lora", {}).get("train_language_tokens"))
+    if resume_from is not None and train_lang_tokens:
+        ckpt_cfg = json.loads((resume_from / "adapter_config.json").read_text(encoding="utf-8"))
+        if not ckpt_cfg.get("trainable_token_indices"):
+            # A checkpoint from before language tokens were trainable cannot be continued
+            # with them; start this run afresh (from init_adapter, if set).
+            log.warning("Ignoring %s: it has no trainable language tokens", resume_from)
+            resume_from = None
     data_seed = seed
     if args.resume:
         if resume_from is None:
@@ -166,7 +174,8 @@ def main():
     lora = cfg.get("lora", {})
     init_adapter = cfg.get("init_adapter")
     if init_adapter:
-        model = load_init_adapter(model, init_adapter, [registry[c] for c in trained_langs])
+        model = load_init_adapter(model, init_adapter, [registry[c] for c in trained_langs],
+                                  trainable_token_ids=list(labels.lang_ids.values()) if train_lang_tokens else None)
         model.print_trainable_parameters()
     elif lora.get("enabled", True):
         from peft import LoraConfig, get_peft_model
@@ -179,6 +188,9 @@ def main():
                 lora_dropout=lora.get("dropout", 0.05),
                 target_modules=lora.get("target_modules", ["q_proj", "k_proj", "v_proj", "out_proj", "fc1", "fc2"]),
                 bias="none",
+                # Whisper's tokens for rare languages (the proxies) are near-identical vectors;
+                # training them gives each South African language its own.
+                trainable_token_indices={"embed_tokens": sorted(labels.lang_ids.values())} if train_lang_tokens else None,
             ),
         )
         model.print_trainable_parameters()
