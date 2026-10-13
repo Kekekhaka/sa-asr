@@ -26,7 +26,7 @@ import yaml
 
 from sa_asr.config import PROJECT_ROOT
 
-STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "report"]
+STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid", "report"]
 
 
 def gpu_settings() -> dict:
@@ -66,6 +66,9 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
         with open(PROJECT_ROOT / "configs/eval_compare.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, sort_keys=False)
         return [(f"{py} scripts/evaluate.py --config configs/eval_compare.yaml --models sa-turbo-lora "
+                 f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "lid":  # language-detection accuracy of the trained model, on the same test clips
+        return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {model_repo} "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
     if stage == "report":
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {})]
