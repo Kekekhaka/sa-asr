@@ -77,7 +77,8 @@ def main():
         for lang in corpus_languages(corpus, select_languages(languages, codes)):
             if lang.code not in trained:
                 continue
-            rows = build_eval_set(  # the cached set (same clips as the WER evaluation), else builtcorpus, lang, cfg.get("split", "test"), cache_dir, max_samples=max_samples,
+            # The cached set (the same clips as the WER evaluation), else built and cached.
+            rows = build_eval_set(corpus, lang, cfg.get("split", "test"), cache_dir, max_samples=max_samples,
                                   seed=seed, max_duration_s=max_dur, shuffle_buffer=buffer)
             t0 = time.time()
             set_recs = []
