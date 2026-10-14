@@ -70,14 +70,16 @@ st.caption(
     "Xitsonga · Tshivenda · siSwati · isiNdebele"
 )
 
-AUTO_LABELS = {"auto": "Detect automatically (one language)", "mixed": "Detect automatically (mixed languages)"}
-options = ["auto"] + (["mixed"] if finetuned else []) + [c for c in registry if not finetuned or c in trained_langs]
+AUTO_LABELS = {"auto": "Detect automatically"}
+options = ["auto"] + [c for c in registry if not finetuned or c in trained_langs]
 lang_choice = st.selectbox(
     "Language",
     options,
     format_func=lambda c: AUTO_LABELS.get(c) or registry[c].name,
-    help="Choosing the language usually gives the best results. 'Mixed languages' detects the language "
-    "part by part (4-10 s at a time), for recordings that switch language, like the national anthem.",
+    help="Choosing the language usually gives the best results. 'Detect automatically' works for one "
+    "language or several: it detects the language part by part (4-10 s at a time) and stays on one "
+    "language unless the evidence for a change is strong, so a recording that switches language, "
+    "like the national anthem, gets a language per part.",
 )
 
 tab_upload, tab_record = st.tabs(["Upload a file", "Record"])
@@ -110,7 +112,7 @@ if st.button("Transcribe", type="primary", disabled=source is None, width="stret
     model.num_beams = num_beams
     with st.spinner(f"Transcribing {fmt_time(duration_seconds(wav))} of audio…"):
         result = transcribe_audio(model, wav, registry, None if lang_choice in AUTO_LABELS else lang_choice,
-                                  mixed=lang_choice == "mixed")
+                                  mixed=lang_choice == "auto")
     # The audio and the model's first answer are kept for corrections (what it got wrong).
     st.session_state.update(
         result=result, wav=wav, model_used=model_input.strip(), rid=st.session_state.get("rid", 0) + 1,
