@@ -18,6 +18,7 @@ from sa_asr.audio import duration_seconds
 from sa_asr.config import PROJECT_ROOT, load_languages
 from sa_asr.feedback import FEEDBACK_DIR, save_correction, summary
 from sa_asr.inference import load_audio, load_transcriber, resolve_model, transcribe_audio
+from sa_asr.textlid import DEFAULT_PATH as TEXT_LID_PATH, TextLID
 from sa_asr.translate import ROUTES, can_translate, translate_segments
 
 UPLOAD_TYPES = ["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac", "webm", "mp4"]
@@ -32,6 +33,12 @@ registry = load_languages()
 @st.cache_data(show_spinner="Looking up model…")
 def cached_resolve(model: str):
     return resolve_model(model)
+
+
+@st.cache_resource(show_spinner=False)
+def get_text_lid() -> TextLID | None:
+    """The spelling-based second opinion on the language (scripts/train_text_lid.py); optional."""
+    return TextLID.load() if TEXT_LID_PATH.exists() else None
 
 
 @st.cache_resource(show_spinner=False)
@@ -112,7 +119,7 @@ if st.button("Transcribe", type="primary", disabled=source is None, width="stret
     model.num_beams = num_beams
     with st.spinner(f"Transcribing {fmt_time(duration_seconds(wav))} of audio…"):
         result = transcribe_audio(model, wav, registry, None if lang_choice in AUTO_LABELS else lang_choice,
-                                  mixed=lang_choice == "auto")
+                                  mixed=lang_choice == "auto", text_lid=get_text_lid())
     # The audio and the model's first answer are kept for corrections (what it got wrong).
     st.session_state.update(
         result=result, wav=wav, model_used=model_input.strip(), rid=st.session_state.get("rid", 0) + 1,

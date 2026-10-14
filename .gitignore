@@ -6,7 +6,7 @@ __pycache__/
 # large / generated
 data/
 outputs/
-results/smoke/
+results/
 wandb/
 *.zip
 logs/

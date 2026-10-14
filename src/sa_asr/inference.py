@@ -14,6 +14,7 @@ import numpy as np
 from .audio import SAMPLE_RATE, decode_audio, duration_seconds, split_long_audio
 from .backends import META_FILE, WhisperTranscriber, localize_model
 from .config import PROJECT_ROOT, Language
+from .textlid import TextLID, combine
 
 CHUNK_BATCH = 8
 # Language detection runs on windows of 4-10 s cut at pauses: long enough to identify a
@@ -22,6 +23,7 @@ CHUNK_BATCH = 8
 DETECT_MIN_S, DETECT_MAX_S = 4.0, 10.0
 DETECT_MAX_WINDOWS = 12
 SWITCH_PENALTY = 2.0  # in log-probability units; see smooth_languages
+TEXT_WEIGHT = 1.0  # how much the spelling of a window's text counts against the audio detector
 
 
 def resolve_model(model: str) -> tuple[str, list[str] | None]:
@@ -121,12 +123,27 @@ def _weighted_mean(probs: list[dict[str, float]], weights: list[float]) -> dict[
     return dict(sorted(mean.items(), key=lambda kv: -kv[1]))
 
 
+def _transcribe_windows(model: WhisperTranscriber, wav: np.ndarray, bounds: list[tuple[int, int]],
+                        indices: list[int], labels: list[str], languages: dict[str, Language]) -> dict[int, tuple[str, str]]:
+    """{window index: (language code, text)}: each window (up to 10 s) transcribed in its language."""
+    out: dict[int, tuple[str, str]] = {}
+    for code in dict.fromkeys(labels[i] for i in indices):
+        todo = [i for i in indices if labels[i] == code]
+        for k in range(0, len(todo), CHUNK_BATCH):
+            part = todo[k : k + CHUNK_BATCH]
+            for i, text in zip(part, model.transcribe([wav[bounds[i][0] : bounds[i][1]] for i in part], languages[code])):
+                out[i] = (code, text)
+    return out
+
+
 def transcribe_audio(
     model: WhisperTranscriber,
     wav: np.ndarray,
     languages: dict[str, Language],
     lang_code: str | None = None,
     mixed: bool = False,
+    text_lid: TextLID | None = None,
+    text_weight: float = TEXT_WEIGHT,
 ) -> dict:
     """Transcribe audio of any length.
 
@@ -135,11 +152,17 @@ def transcribe_audio(
       from 4-10 s windows. mixed=False uses the single most likely language; mixed=True
       lets the language change along the recording (e.g. the national anthem), and each
       stretch is transcribed in its own language.
+    text_lid (mixed only): a second opinion from the spelling of each window's transcript. Each
+      window is transcribed once in its audio-detected language, the spelling is read by the
+      text model, and the two are combined before the final choice; windows whose language
+      changes are transcribed again in the new language.
     A zero-shot model with no language lets Whisper choose.
     """
     t0 = time.time()
     detected = None
     runs: list[tuple[int, int, Language | None]]  # (start, end, language) sample ranges
+    window_texts: dict[int, tuple[str, str]] = {}  # window index -> (language, text), when already transcribed
+    bounds: list[tuple[int, int]] = []
     if lang_code is not None:
         runs = [(0, len(wav), languages[lang_code])]
     elif model.proxy_tokens is not None:
@@ -147,9 +170,16 @@ def transcribe_audio(
         bounds = detection_windows(wav, max_windows=None if mixed else DETECT_MAX_WINDOWS)
         probs = _detect(model, wav, bounds, candidates)
         weights = [(b - a) / SAMPLE_RATE / 5 for a, b in bounds]  # a 10 s window counts twice a 5 s one
-        detected = _weighted_mean(probs, weights)
         if mixed:
             labels = smooth_languages(probs, weights)
+            if text_lid is not None and probs:
+                window_texts = _transcribe_windows(model, wav, bounds, list(range(len(bounds))), labels, languages)
+                probs = [combine(p, text_lid.posterior(window_texts[i][1]), text_weight, len(window_texts[i][1]))
+                         for i, p in enumerate(probs)]
+                labels = smooth_languages(probs, weights)
+                changed = [i for i, (code, _) in window_texts.items() if code != labels[i]]
+                window_texts.update(_transcribe_windows(model, wav, bounds, changed, labels, languages))
+            detected = _weighted_mean(probs, weights)
             runs = []
             for (a, b), code in zip(bounds, labels):
                 if runs and runs[-1][2].code == code:
@@ -157,12 +187,26 @@ def transcribe_audio(
                 else:
                     runs.append((a, b, languages[code]))
         else:
+            detected = _weighted_mean(probs, weights)
             runs = [(0, len(wav), languages[next(iter(detected))])]
     else:
         runs = [(0, len(wav), None)]
 
     segments = []
-    for a, b, lang in runs:
+    if window_texts:  # the text check already transcribed every window
+        segments = [
+            {"start": round(a / SAMPLE_RATE, 2), "end": round(b / SAMPLE_RATE, 2),
+             "text": window_texts[i][1], "language": window_texts[i][0]}
+            for i, (a, b) in enumerate(bounds)
+        ]
+        runs = []
+        for seg, (a, b) in zip(segments, bounds):
+            lang = languages[seg["language"]]
+            if runs and runs[-1][2].code == lang.code:
+                runs[-1] = (runs[-1][0], b, lang)
+            else:
+                runs.append((a, b, lang))
+    for a, b, lang in ([] if window_texts else runs):
         chunks = split_long_audio(wav[a:b])
         texts: list[str] = []
         for i in range(0, len(chunks), CHUNK_BATCH):
