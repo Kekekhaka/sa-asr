@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "report"]
 
 
 def gpu_settings() -> dict:
@@ -85,6 +85,9 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
         repo, out = (model_repo, "results/lid") if stage == "lid" else (f"{model_repo}-v2", "results/lid_v2")
         return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {repo} "
                  f"--output-dir {out} --max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "lm_rescore":  # experiment: does MzansiLM (text-only) pick better transcripts from the n-best list?
+        return [(f"{py} scripts/lm_rescore.py --config configs/eval_baseline.yaml --model {model_repo}-v2 "
+                 f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
     if stage == "report":
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {})]
     raise ValueError(stage)

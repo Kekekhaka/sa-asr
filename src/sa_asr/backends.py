@@ -204,6 +204,39 @@ class WhisperTranscriber(Transcriber):
         out = self.model.generate(feats.input_features.to(self.device, self.dtype), **kwargs)
         return [t.strip() for t in self.processor.batch_decode(out, skip_special_tokens=True)]
 
+    @torch.inference_mode()
+    def transcribe_nbest(self, audios: list[np.ndarray], lang: Language, n: int) -> list[list[tuple[str, float]]]:
+        """The n best candidate transcripts per clip (beam search), best first, each with the
+        model's own score (mean log-probability per token, length-normalised).
+
+        Whisper's own generate() collapses several returned sequences to the single best, so this
+        prompts the decoder directly (start, language, task, no-timestamps) and uses the generic
+        beam search, which keeps every beam."""
+        from transformers.generation.utils import GenerationMixin
+
+        tok = self.processor.tokenizer
+        feats = self.processor.feature_extractor(audios, sampling_rate=SAMPLE_RATE, return_tensors="pt")
+        language = self._language_for(lang)
+        if language is None:
+            raise ValueError("transcribe_nbest needs a language")
+        prompt = torch.tensor(
+            [tok.convert_tokens_to_ids(t) for t in ("<|startoftranscript|>", f"<|{language}|>", "<|transcribe|>", "<|notimestamps|>")],
+            device=self.device,
+        ).repeat(len(audios), 1)
+        out = GenerationMixin.generate(
+            self.model,
+            input_features=feats.input_features.to(self.device, self.dtype),
+            decoder_input_ids=prompt,
+            num_beams=n,
+            num_return_sequences=n,
+            max_new_tokens=self.max_new_tokens,
+            return_dict_in_generate=True,
+            output_scores=True,
+        )
+        texts = [t.strip() for t in self.processor.batch_decode(out.sequences, skip_special_tokens=True)]
+        scores = out.sequences_scores.float().tolist()
+        return [list(zip(texts[i * n : (i + 1) * n], scores[i * n : (i + 1) * n])) for i in range(len(audios))]
+
 
 class MMSTranscriber(Transcriber):
     """Meta MMS (wav2vec2 CTC with per-language adapters).
