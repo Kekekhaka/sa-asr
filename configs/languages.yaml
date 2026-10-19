@@ -35,13 +35,13 @@ languages:
     whisper_token: sn
     whisper_native: false
     mms_adapter: zul
-    corpora: {nchlt: zul, swivuriso: zul, fleurs: zu_za, lwazi: isizulu}
+    corpora: {nchlt: zul, swivuriso: zul, swivuriso_unscripted: zul, fleurs: zu_za, lwazi: isizulu}
   xho:
     name: isiXhosa
     whisper_token: sw
     whisper_native: false
     mms_adapter: xho
-    corpora: {nchlt: xho, swivuriso: xho, fleurs: xh_za, lwazi: isixhosa, openslr32: xh_za}
+    corpora: {nchlt: xho, swivuriso: xho, swivuriso_unscripted: xho, fleurs: xh_za, lwazi: isixhosa, openslr32: xh_za}
   nso:
     name: Sepedi
     whisper_token: ha
@@ -53,25 +53,25 @@ languages:
     whisper_token: so
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: sot, swivuriso: sot, lwazi: sesotho, openslr32: st_za}
+    corpora: {nchlt: sot, swivuriso: sot, swivuriso_unscripted: sot, lwazi: sesotho, openslr32: st_za}
   tsn:
     name: Setswana
     whisper_token: mg
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: tsn, swivuriso: tsn, lwazi: setswana, openslr32: tn_za}
+    corpora: {nchlt: tsn, swivuriso: tsn, swivuriso_unscripted: tsn, lwazi: setswana, openslr32: tn_za}
   tso:
     name: Xitsonga
     whisper_token: am
     whisper_native: false
     mms_adapter: tso
-    corpora: {nchlt: tso, swivuriso: tso, lwazi: xitsonga}
+    corpora: {nchlt: tso, swivuriso: tso, swivuriso_unscripted: tso, lwazi: xitsonga}
   ven:
     name: Tshivenda
     whisper_token: yo
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: ven, swivuriso: ven, lwazi: tshivenda}
+    corpora: {nchlt: ven, swivuriso: ven, swivuriso_unscripted: ven, lwazi: tshivenda}
   ssw:
     name: siSwati
     whisper_token: ln
@@ -83,4 +83,4 @@ languages:
     whisper_token: lb
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: nbl, swivuriso: nbl, lwazi: isindebele}
+    corpora: {nchlt: nbl, swivuriso: nbl, swivuriso_unscripted: nbl, lwazi: isindebele}

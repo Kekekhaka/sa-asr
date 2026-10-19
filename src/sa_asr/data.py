@@ -64,6 +64,8 @@ class CorpusSpec:
     # validation (and removed from train), so validation speakers are never trained on.
     validation_holdout: float | None = None
     channel: str = "wideband"  # "telephone" for corpora recorded over phone lines
+    # (column, value): keep only rows with column == value (a view of a corpus, e.g. its spontaneous part).
+    row_filter: tuple[str, str] | None = None
 
 
 CORPORA: dict[str, CorpusSpec] = {
@@ -87,6 +89,20 @@ CORPORA: dict[str, CorpusSpec] = {
         splits={"train": "train", "validation": "dev", "test": "dev_test"},
         license="CC-BY-4.0",
         gated=True,
+    ),
+    # The spontaneous (unscripted) part of Swivuriso: people talking freely about a scenario,
+    # recorded on their own phones. For testing how the model does on natural speech; the
+    # plain "swivuriso" evaluation mixes scripted and unscripted clips.
+    "swivuriso_unscripted": CorpusSpec(
+        name="swivuriso_unscripted",
+        repo="dsfsi-anv/za-african-next-voices",
+        text_column="transcript",
+        id_column="audio_id",
+        speaker_column="recorder_uuid",
+        splits={"train": "train", "validation": "dev", "test": "dev_test"},
+        license="CC-BY-4.0",
+        gated=True,
+        row_filter=("type", "unscripted"),
     ),
     # FLEURS: read Wikipedia sentences. Kept out of training by default so it stays an
     # out-of-domain benchmark.
@@ -280,6 +296,10 @@ def load_corpus(corpus: str, lang: Language, split: str, max_duration_s: float |
     if spec.language_column:
         value = lang.corpora[corpus]
         ds = ds.filter(lambda ex: ex[spec.language_column] == value)
+
+    if spec.row_filter:
+        column, wanted = spec.row_filter
+        ds = ds.filter(lambda ex: ex[column] == wanted)
 
     want_holdout = _holdout_wanted(spec, split)
     if want_holdout is not None:

@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "report"]
 
 
 def gpu_settings() -> dict:
@@ -88,6 +88,18 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
     if stage == "lm_rescore":  # experiment: does MzansiLM (text-only) pick better transcripts from the n-best list?
         return [(f"{py} scripts/lm_rescore.py --config configs/eval_baseline.yaml --model {model_repo}-v2 "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "natural":  # natural speech: only the unscripted Swivuriso clips, scored with the models that cover them
+        cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
+        cfg["output_dir"] = "results/natural"
+        cfg["eval_sets"] = {"swivuriso_unscripted": "all"}
+        cfg["models"] = [m for m in cfg["models"] if m["name"] in ("dsfsi-anv-multilingual-turbo", "mms-1b-all")]
+        cfg["models"] += [{"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"},
+                          {"name": "sa-turbo-lora-v2", "type": "whisper", "model": f"{model_repo}-v2",
+                           "language_mode": "proxy"}]
+        with open(PROJECT_ROOT / "configs/eval_natural.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+        return [(f"{py} scripts/evaluate.py --config configs/eval_natural.yaml --max-samples {s['eval_samples']} "
+                 f"--sync-repo {results}", {})]
     if stage == "report":
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {})]
     raise ValueError(stage)
