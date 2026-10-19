@@ -178,3 +178,36 @@ def test_trainable_tokens_separate_languages_whose_tokens_start_identical(tmp_pa
             logits = model(input_features=f, decoder_input_ids=torch.tensor([[sot_id]])).logits[0, -1]
         other = sot if want == nso else nso
         assert logits[want] > logits[other], code
+
+
+def test_init_adapter_that_already_trains_the_language_tokens_keeps_all_its_weights(tmp_path):
+    """Round 3 starts from round 2's adapter, which already includes the language-token rows."""
+    from peft import LoraConfig, get_peft_model, get_peft_model_state_dict
+
+    from sa_asr.backends import META_FILE
+    from sa_asr.config import load_languages
+    from sa_asr.training import load_init_adapter
+
+    proc = _tiny_processor()
+    reg = load_languages()
+    ids = sorted(proc.tokenizer.convert_tokens_to_ids(f"<|{reg[c].whisper_token}|>") for c in ["nso", "sot"])
+    old = get_peft_model(_tiny_model(proc), LoraConfig(r=4, lora_alpha=8, target_modules=["q_proj", "v_proj"],
+                                                       trainable_token_indices={"embed_tokens": ids}))
+    with torch.no_grad():
+        for n, p in old.named_parameters():
+            if p.requires_grad:
+                p.normal_()  # non-zero everywhere (LoRA and token rows), so copying is visible
+    adapter = tmp_path / "adapter"
+    old.save_pretrained(adapter)
+    (adapter / META_FILE).write_text(json.dumps({"languages": ["nso", "sot"], "whisper_tokens": {
+        "nso": reg["nso"].whisper_token, "sot": reg["sot"].whisper_token}}))
+
+    new = load_init_adapter(_tiny_model(proc), str(adapter), [reg["nso"], reg["sot"]], trainable_token_ids=ids)
+    assert any("trainable_tokens" in n and p.requires_grad for n, p in new.named_parameters())
+    old_sd, new_sd = get_peft_model_state_dict(old), get_peft_model_state_dict(new)
+    assert old_sd.keys() == new_sd.keys()
+    for k, v in old_sd.items():
+        assert torch.equal(v, new_sd[k]), k
+
+    with pytest.raises(ValueError, match="token rows"):
+        load_init_adapter(_tiny_model(proc), str(adapter), [reg["nso"], reg["sot"]], trainable_token_ids=ids[:1])

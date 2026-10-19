@@ -193,6 +193,12 @@ def load_init_adapter(model, init_adapter: str, languages: list[Language], train
         return PeftModel.from_pretrained(model, path, is_trainable=True)
 
     old = json.loads((Path(path) / "adapter_config.json").read_text(encoding="utf-8"))
+    had = (old.get("trainable_token_indices") or {}).get("embed_tokens")
+    if had is not None:  # a later round: the adapter already carries (and keeps training) the language tokens
+        if sorted(had) != sorted(trainable_token_ids):
+            raise ValueError(f"init_adapter trains token rows {sorted(had)}, but the languages need {sorted(trainable_token_ids)}")
+        log.info("Language-token embeddings are trainable (already in the adapter): %d tokens", len(had))
+        return PeftModel.from_pretrained(model, path, is_trainable=True)
     cfg = LoraConfig(r=old["r"], lora_alpha=old["lora_alpha"], lora_dropout=old.get("lora_dropout", 0.0),
                      target_modules=old["target_modules"], bias=old.get("bias", "none"),
                      trainable_token_indices={"embed_tokens": sorted(trainable_token_ids)})

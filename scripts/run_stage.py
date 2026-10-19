@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "report"]
 
 
 def gpu_settings() -> dict:
@@ -72,6 +72,10 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
         limit = f" --max-hours {max_hours}" if max_hours else ""
         return [(f"{py} scripts/train.py --config configs/train_lora_v2.yaml {s['batch']} "
                  f"--hub-repo {model_repo}-v2 --resume{limit}", {})]
+    if stage == "train_v3":  # round 3: more natural speech; continues from round 2
+        limit = f" --max-hours {max_hours}" if max_hours else ""
+        return [(f"{py} scripts/train.py --config configs/train_lora_v3.yaml {s['batch']} "
+                 f"--hub-repo {model_repo}-v3 --resume{limit}", {})]
     if stage == "compare_v2":
         cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
         cfg["models"].append({"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"})
@@ -100,6 +104,24 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
             yaml.safe_dump(cfg, f, sort_keys=False)
         return [(f"{py} scripts/evaluate.py --config configs/eval_natural.yaml --max-samples {s['eval_samples']} "
                  f"--sync-repo {results}", {})]
+    if stage in ("compare_v3", "natural_v3"):  # same tables as before, with the round-3 model added (others are cached)
+        cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
+        cfg["models"] += [{"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"},
+                          {"name": "sa-turbo-lora-v2", "type": "whisper", "model": f"{model_repo}-v2",
+                           "language_mode": "proxy"},
+                          {"name": "sa-turbo-lora-v3", "type": "whisper", "model": f"{model_repo}-v3",
+                           "language_mode": "proxy"}]
+        if stage == "natural_v3":
+            cfg["output_dir"], cfg["eval_sets"] = "results/natural", {"swivuriso_unscripted": "all"}
+            cfg["models"] = [m for m in cfg["models"] if m["name"] in
+                             ("dsfsi-anv-multilingual-turbo", "mms-1b-all", "sa-turbo-lora", "sa-turbo-lora-v2", "sa-turbo-lora-v3")]
+        with open(PROJECT_ROOT / "configs/eval_compare.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+        return [(f"{py} scripts/evaluate.py --config configs/eval_compare.yaml --models sa-turbo-lora-v3 "
+                 f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "lid_v3":
+        return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {model_repo}-v3 "
+                 f"--output-dir results/lid_v3 --max-samples {s['eval_samples']} --sync-repo {results}", {})]
     if stage == "report":
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {})]
     raise ValueError(stage)

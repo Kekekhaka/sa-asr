@@ -1,0 +1,80 @@
+# Round 3: more training on natural speech.
+#   python scripts/train.py --config configs/train_lora_v3.yaml --hub-repo <user>/sa-asr-whisper-lora-v3 --resume
+# (on Kaggle: STAGE = "train_v3", run it twice: each session stops after ~11 h and the second resumes)
+#
+# Why (2026-10-19): on natural speech (unscripted Swivuriso) round 2 scores 17-31% WER, against
+# 13-22% for the dsfsi model that was fine-tuned on that data (and slightly worse than round 1:
+# 24.1% vs 23.3% on average). Round 2 saw only ~38,000 clips spread over 11 languages and 6
+# corpora. Round 3 trains longer and puts more of the mix on Swivuriso (7 languages), while
+# keeping English, Afrikaans, Sepedi and siSwati (no Swivuriso data) from being squeezed out.
+#
+# Expected sampling shares with these weights (language %): afr 6.9, eng 4.9, nbl 9.5, nso 10.1,
+# sot 10.1, ssw 7.5, tsn 10.1, tso 9.5, ven 9.5, xho 11.3, zul 10.7;
+# corpus %: swivuriso 51, lwazi 17, nchlt 15, fleurs 9, nchlt_eng 5, openslr32 3.
+# (Round 2: swivuriso 38, nchlt 24, lwazi 20, fleurs 11, nchlt_eng 3, openslr32 5.)
+#
+# Judge it on: `natural_v3` (natural speech), `compare_v3` (the standard sets) and `lid_v3`
+# (language detection must not drop below round 2's 76% exact / 96% family).
+
+base_model: openai/whisper-large-v3-turbo
+init_adapter: KekeCode/sa-asr-whisper-lora-v2   # round 2: LoRA weights and the trained language tokens
+output_dir: outputs/whisper-turbo-sa-lora-v3
+
+languages: all
+
+corpora:
+  nchlt: 0.75          # was 1.0: read prompts; its transcript conventions pull against natural speech
+  swivuriso: 6.0       # was 3.0
+  nchlt_eng: 1.0
+  lwazi: 1.0           # the only telephone speech: keep it, it is where we lead
+  fleurs: 1.0
+  openslr32: 0.5
+
+language_weights:
+  nso: 3.0             # was 2.0: no Swivuriso data, so keep its share up
+  ssw: 3.5             # was 2.0: same
+  afr: 2.5
+  eng: 4.0             # was 1.5: English matters for code-switched speech
+
+text: clean
+max_duration_s: 30
+max_label_tokens: 440
+shuffle_buffer: 64
+
+augment:
+  telephone_prob: 0.3
+  noise_prob: 0.15
+
+lora:                 # r/alpha/targets come from the adapter being continued
+  enabled: true
+  train_language_tokens: true
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, out_proj, fc1, fc2]
+
+training:
+  max_steps: 2400     # ~11 h per Kaggle session at ~31 s/step => two sessions (~22 h of the 30 h weekly quota)
+  lid_loss_weight: 1.0
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-5
+  warmup_steps: 100
+  lr_scheduler_type: linear
+  weight_decay: 0.0
+  gradient_checkpointing: true
+  eval_steps: 600     # each evaluation takes ~4.5 min
+  save_steps: 600
+  save_total_limit: 3
+  logging_steps: 10
+  dataloader_num_workers: 0
+  report_to: none
+  seed: 44            # a different data order from rounds 1 and 2
+  max_runtime_hours: 11.0
+  checkpoint_every_hours: 2.0
+  stall_timeout_minutes: 40
+
+validation:
+  cache_dir: data/eval_cache
+  max_samples_per_set: 32
