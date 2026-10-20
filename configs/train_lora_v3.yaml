@@ -71,7 +71,7 @@ training:
   dataloader_num_workers: 0
   report_to: none
   seed: 44            # a different data order from rounds 1 and 2
-  max_runtime_hours: 11.0
+  max_runtime_hours: 11.75   # session 2 needs ~11.4 h (1,224 steps + 3 evaluations + ~25 min start-up); Kaggle stops at 12 h
   checkpoint_every_hours: 2.0
   stall_timeout_minutes: 40
 
