@@ -69,6 +69,29 @@ def test_mixed_recording_is_transcribed_part_by_part():
     assert res["segments"][-1]["end"] == round(len(wav) / SR, 2)
 
 
+def test_progress_is_reported_and_a_caller_can_cancel_between_batches():
+    import pytest
+
+    wav = np.concatenate([tone(9, 0.1), np.zeros(SR // 2, np.float32), tone(9, 0.1)])
+    registry = load_languages()
+    seen = []
+    transcribe_audio(FakeModel(), wav, registry, mixed=True, on_progress=lambda what, done, total: seen.append((what, done, total)))
+    assert seen and all(total >= 1 and 0 <= done <= total for _, done, total in seen)
+    assert {what for what, _, _ in seen} == {"Detecting the language", "Transcribing"}
+
+    class Stop(Exception):
+        pass
+
+    def stop_when_transcribing(what, done, total):
+        if what == "Transcribing":
+            raise Stop
+
+    model = FakeModel()
+    with pytest.raises(Stop):
+        transcribe_audio(model, wav, registry, mixed=True, on_progress=stop_when_transcribing)
+    assert model.calls == []  # cancelled before the first transcription batch ran
+
+
 def test_translate_segments_uses_each_segments_language(monkeypatch):
     import sa_asr.translate as tr
 

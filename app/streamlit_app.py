@@ -117,9 +117,17 @@ if st.button("Transcribe", type="primary", disabled=source is None, width="stret
             st.error(f"Couldn't load model '{model_input}': {e}")
             st.stop()
     model.num_beams = num_beams
-    with st.spinner(f"Transcribing {fmt_time(duration_seconds(wav))} of audio…"):
-        result = transcribe_audio(model, wav, registry, None if lang_choice in AUTO_LABELS else lang_choice,
-                                  mixed=lang_choice == "auto", text_lid=get_text_lid())
+    # Streamlit can only interrupt a run when the script touches the page, so progress is reported
+    # between batches of windows. Pressing Stop (or Transcribe again) then cancels within a few seconds.
+    st.button("Stop", key="stop_transcribing", help="Cancel this transcription")
+    bar = st.progress(0.0, text=f"Transcribing {fmt_time(duration_seconds(wav))} of audio…")
+
+    def show_progress(what: str, done: int, total: int) -> None:
+        bar.progress(min(done / max(total, 1), 1.0), text=f"{what}… ({done}/{total} parts done)")
+
+    result = transcribe_audio(model, wav, registry, None if lang_choice in AUTO_LABELS else lang_choice,
+                              mixed=lang_choice == "auto", text_lid=get_text_lid(), on_progress=show_progress)
+    bar.empty()
     # The audio and the model's first answer are kept for corrections (what it got wrong).
     st.session_state.update(
         result=result, wav=wav, model_used=model_input.strip(), rid=st.session_state.get("rid", 0) + 1,

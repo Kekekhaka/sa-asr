@@ -7,6 +7,7 @@ import math
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -110,9 +111,15 @@ def smooth_languages(probs: list[dict[str, float]], weights: list[float], switch
     return path[::-1]
 
 
-def _detect(model: WhisperTranscriber, wav: np.ndarray, bounds: list[tuple[int, int]], candidates: list[Language]):
+Progress = Callable[[str, int, int], None]  # (what is being done, parts done, parts in total)
+
+
+def _detect(model: WhisperTranscriber, wav: np.ndarray, bounds: list[tuple[int, int]], candidates: list[Language],
+            on_progress: Progress | None = None):
     probs: list[dict[str, float]] = []
     for i in range(0, len(bounds), CHUNK_BATCH):
+        if on_progress:
+            on_progress("Detecting the language", i, len(bounds))
         probs += model.detect_languages([wav[a:b] for a, b in bounds[i : i + CHUNK_BATCH]], candidates)
     return probs
 
@@ -124,13 +131,16 @@ def _weighted_mean(probs: list[dict[str, float]], weights: list[float]) -> dict[
 
 
 def _transcribe_windows(model: WhisperTranscriber, wav: np.ndarray, bounds: list[tuple[int, int]],
-                        indices: list[int], labels: list[str], languages: dict[str, Language]) -> dict[int, tuple[str, str]]:
+                        indices: list[int], labels: list[str], languages: dict[str, Language],
+                        on_progress: Progress | None = None) -> dict[int, tuple[str, str]]:
     """{window index: (language code, text)}: each window (up to 10 s) transcribed in its language."""
     out: dict[int, tuple[str, str]] = {}
     for code in dict.fromkeys(labels[i] for i in indices):
         todo = [i for i in indices if labels[i] == code]
         for k in range(0, len(todo), CHUNK_BATCH):
             part = todo[k : k + CHUNK_BATCH]
+            if on_progress:
+                on_progress("Transcribing", len(out), len(indices))
             for i, text in zip(part, model.transcribe([wav[bounds[i][0] : bounds[i][1]] for i in part], languages[code])):
                 out[i] = (code, text)
     return out
@@ -144,6 +154,7 @@ def transcribe_audio(
     mixed: bool = False,
     text_lid: TextLID | None = None,
     text_weight: float = TEXT_WEIGHT,
+    on_progress: Progress | None = None,
 ) -> dict:
     """Transcribe audio of any length.
 
@@ -157,6 +168,8 @@ def transcribe_audio(
       text model, and the two are combined before the final choice; windows whose language
       changes are transcribed again in the new language.
     A zero-shot model with no language lets Whisper choose.
+    on_progress(what, done, total) is called before each batch of windows; a caller that raises
+    from it (a Stop button) cancels the run between batches.
     """
     t0 = time.time()
     detected = None
@@ -168,17 +181,17 @@ def transcribe_audio(
     elif model.proxy_tokens is not None:
         candidates = [languages[c] for c in model.proxy_tokens if c in languages]
         bounds = detection_windows(wav, max_windows=None if mixed else DETECT_MAX_WINDOWS)
-        probs = _detect(model, wav, bounds, candidates)
+        probs = _detect(model, wav, bounds, candidates, on_progress)
         weights = [(b - a) / SAMPLE_RATE / 5 for a, b in bounds]  # a 10 s window counts twice a 5 s one
         if mixed:
             labels = smooth_languages(probs, weights)
             if text_lid is not None and probs:
-                window_texts = _transcribe_windows(model, wav, bounds, list(range(len(bounds))), labels, languages)
+                window_texts = _transcribe_windows(model, wav, bounds, list(range(len(bounds))), labels, languages, on_progress)
                 probs = [combine(p, text_lid.posterior(window_texts[i][1]), text_weight, len(window_texts[i][1]))
                          for i, p in enumerate(probs)]
                 labels = smooth_languages(probs, weights)
                 changed = [i for i, (code, _) in window_texts.items() if code != labels[i]]
-                window_texts.update(_transcribe_windows(model, wav, bounds, changed, labels, languages))
+                window_texts.update(_transcribe_windows(model, wav, bounds, changed, labels, languages, on_progress))
             detected = _weighted_mean(probs, weights)
             runs = []
             for (a, b), code in zip(bounds, labels):
@@ -210,6 +223,8 @@ def transcribe_audio(
         chunks = split_long_audio(wav[a:b])
         texts: list[str] = []
         for i in range(0, len(chunks), CHUNK_BATCH):
+            if on_progress:
+                on_progress("Transcribing", i, len(chunks))
             texts += model.transcribe([c for _, c in chunks[i : i + CHUNK_BATCH]], lang)
         offset = a / SAMPLE_RATE
         segments += [
