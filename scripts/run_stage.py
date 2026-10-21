@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "text_lid", "report"]
 
 
 def gpu_settings() -> dict:
@@ -122,6 +122,14 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
     if stage == "lid_v3":
         return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {model_repo}-v3 "
                  f"--output-dir results/lid_v3 --max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "text_lid":  # no GPU needed: bigger spelling model from training transcripts, tested on unseen test clips
+        preds = "results/baseline/predictions/sa-turbo-lora-v2"
+        return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {}),
+                (f"{py} scripts/collect_texts.py --sync-repo {results}", {}),
+                (f"{py} scripts/train_text_lid.py --texts-dir data/lid_texts --predictions {preds} --holdout", {}),
+                (f"{py} scripts/train_text_lid.py --texts-dir data/lid_texts --predictions {preds} "
+                 f"--output models/text_lid_v2.json.gz", {}),
+                (f"{py} scripts/hub_sync.py push models --repo {results}", {})]
     if stage == "report":
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {})]
     raise ValueError(stage)

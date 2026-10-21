@@ -431,6 +431,39 @@ def read_parquet_rows(files: list[str], *, corpus: str, lang_code: str, lang_val
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+def read_texts(corpus: str, lang: Language, split: str = "train", limit: int | None = None) -> list[str]:
+    """Transcripts only of (corpus, language, split): reads just the text (and filter) columns of each
+    Parquet file over HTTP range requests, so no audio is downloaded. Same row filters as training."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfFileSystem
+
+    spec = CORPORA[corpus]
+    want_holdout = _holdout_wanted(spec, split)
+    columns = sorted({spec.text_column}
+                     | ({spec.speaker_column} if spec.speaker_column else set())
+                     | ({spec.language_column} if spec.language_column else set())
+                     | ({spec.row_filter[0]} if spec.row_filter else set()))
+    fs, texts = HfFileSystem(), []
+    for url in corpus_files(corpus, lang, split):
+        repo_id, revision, path = parse_hf_url(url)
+        with fs.open(f"datasets/{repo_id}{'@' + revision if revision else ''}/{path}", "rb") as f:
+            table = pq.ParquetFile(f).read(columns=columns)
+        for ex in table.to_pylist():
+            if spec.language_column and ex[spec.language_column] != lang.corpora[corpus]:
+                continue
+            if spec.row_filter and ex[spec.row_filter[0]] != spec.row_filter[1]:
+                continue
+            if want_holdout is not None and in_validation_holdout(
+                str(ex[spec.speaker_column]), spec.validation_holdout
+            ) != want_holdout:
+                continue
+            if ex[spec.text_column]:
+                texts.append(ex[spec.text_column])
+        if limit and len(texts) >= limit:
+            break
+    return texts
+
+
 TRAIN_FEATURES = Features({**COMMON_FEATURES, "audio": TRAIN_AUDIO})
 
 

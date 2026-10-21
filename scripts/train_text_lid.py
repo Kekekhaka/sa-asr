@@ -56,6 +56,13 @@ def main() -> None:
         for p in Path(args.texts_dir).glob("*.txt"):
             extra[p.stem] = [l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
 
+    if args.holdout and extra:  # train only on the collected training texts; every test clip is unseen
+        model = TextLID.train(extra)
+        recs = [{"lang": code, "pred": max((s := model.scores(hyp)), key=s.get)} for code, _, hyp in rows]
+        print("Text-only accuracy on the model's transcripts of the test clips (trained on training texts only):")
+        print(accuracy(recs))
+        return
+
     if args.holdout:
         sentences = sorted({normalize(r[1]) for r in rows})
         random.Random(0).shuffle(sentences)
