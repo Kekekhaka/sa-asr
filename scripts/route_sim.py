@@ -35,6 +35,7 @@ DSFSI = "dsfsi-anv-multilingual-turbo"
 OURS = "sa-turbo-lora-v3"
 DSFSI_LANGS = {"zul", "xho", "sot", "tsn", "tso", "ven"}
 THRESHOLDS_DB = [-80, -70, -60, -55, -50, -45, -40, -35, -30, -25, -20, 0]
+MIN_SECONDS = [0, 3, 4, 5, 6, 7, 8, 10, 12]
 
 
 def resolve(path: str) -> Path:
@@ -101,7 +102,7 @@ def collect(root: Path, cache_dir: Path) -> list[dict]:
                 eb, _ = word_errors(da["reference"], b[utt]["hypothesis"])
                 wav = decode_audio({"bytes": feats[utt]["flac"]})
                 recs.append({"set": stem, "corpus": corpus, "lang": lang, "utt": utt, "n": n, "dsfsi": ea,
-                             "ours": eb, "hb": high_band_db(wav)})
+                             "ours": eb, "hb": high_band_db(wav), "sec": len(wav) / 16000})
     return recs
 
 
@@ -113,10 +114,11 @@ def analyze(recs: list[dict]) -> str:
     def wer(rows, pick):
         return 100 * sum(pick(r) for r in rows) / max(sum(r["n"] for r in rows), 1)
 
-    def route(t):
-        return lambda r: r["dsfsi"] if r["hb"] >= t else r["ours"]
+    def route(t, d=0):
+        return lambda r: r["dsfsi"] if r["hb"] >= t and r["sec"] >= d else r["ours"]
 
     best = min(THRESHOLDS_DB, key=lambda t: wer(dev, route(t)))
+    best_t2, best_d = min(((t, d) for t in THRESHOLDS_DB for d in MIN_SECONDS), key=lambda td: wer(dev, route(*td)))
     corpora = sorted({r["corpus"] for r in recs})
     lines = ["# Routing simulation: our model vs dsfsi-anv on dsfsi's six languages", "",
              f"{len(recs)} clips (zul, xho, sot, tsn, tso, ven) from {len(corpora)} corpora; ideal language detector. "
@@ -126,6 +128,7 @@ def analyze(recs: list[dict]) -> str:
              "## Held-out WER (%)", "", "| rule | " + " | ".join(corpora) + " | all |", "|---|" + "---|" * (len(corpora) + 1)]
     rules = [("our model only", lambda r: r["ours"]), ("dsfsi only", lambda r: r["dsfsi"]),
              (f"route (>= {best} dB to dsfsi)", route(best)),
+             (f"route (>= {best_t2} dB and >= {best_d} s to dsfsi)", route(best_t2, best_d)),
              ("oracle: best of the two per clip", lambda r: min(r["ours"], r["dsfsi"]))]
     for name, pick in rules:
         cells = [f"{wer([r for r in test if r['corpus'] == c], pick):.1f}" for c in corpora]
@@ -135,6 +138,15 @@ def analyze(recs: list[dict]) -> str:
     for t in THRESHOLDS_DB:
         share = 100 * sum(r["hb"] >= t for r in test) / max(len(test), 1)
         lines.append(f"| {t} | {wer(test, route(t)):.1f} | {share:.0f}% |")
+    lines += ["", "## Minimum clip length (held-out WER %, bandwidth threshold = chosen; share of clips to dsfsi)", "",
+              "| min seconds | WER | to dsfsi |", "|---|---|---|"]
+    for d in MIN_SECONDS:
+        share = 100 * sum(r["hb"] >= best and r["sec"] >= d for r in test) / max(len(test), 1)
+        lines.append(f"| {d} | {wer(test, route(best, d)):.1f} | {share:.0f}% |")
+    lines += ["", "## Clip length per corpus (median / 10th / 90th percentile, seconds)", "", "| corpus | median | 10th | 90th |", "|---|---|---|---|"]
+    for c in corpora:
+        v = np.array([r["sec"] for r in recs if r["corpus"] == c])
+        lines.append(f"| {c} | {np.median(v):.1f} | {np.percentile(v, 10):.1f} | {np.percentile(v, 90):.1f} |")
     lines += ["", "## Typical bandwidth per corpus (median dB)", "", "| corpus | median | 10th pct | 90th pct |", "|---|---|---|---|"]
     for c in corpora:
         v = np.array([r["hb"] for r in recs if r["corpus"] == c])
