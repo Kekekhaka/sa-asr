@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "text_lid", "lid_combined", "route_sim", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
 
 
 def gpu_settings() -> dict:
@@ -135,6 +135,9 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
     if stage == "route_sim":  # CPU only: would sending clips to dsfsi-anv (by language and audio bandwidth) beat our model?
         return [(f"{py} scripts/route_sim.py --sync-repo {results}", {})]
+    if stage == "lid_probe":  # a classifier on the encoder's features, trained on labelled training clips of all 11 languages
+        return [(f"{py} scripts/lid_probe.py --model {model_repo}-v3 --max-samples {s['eval_samples']} "
+                 f"--sync-repo {results}", {})]
     if stage == "report":
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {})]
     raise ValueError(stage)
