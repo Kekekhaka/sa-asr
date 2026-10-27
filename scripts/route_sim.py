@@ -29,6 +29,7 @@ import numpy as np
 
 from sa_asr.config import PROJECT_ROOT
 from sa_asr.hub import HubSync
+from sa_asr.routing import high_band_db
 
 log = logging.getLogger("route_sim")
 DSFSI = "dsfsi-anv-multilingual-turbo"
@@ -56,18 +57,6 @@ def word_errors(ref: str, hyp: str) -> tuple[int, int]:
         for j in range(1, len(h) + 1):
             d[j] = min(prev[j] + 1, d[j - 1] + 1, prev[j - 1] + (r[i - 1] != h[j - 1]))
     return d[-1], len(r)
-
-
-def high_band_db(wav: np.ndarray, sr: int = 16000) -> float:
-    """Energy above 4 kHz relative to 0.3-4 kHz, in dB (about -60 or lower for telephone audio)."""
-    n = 512
-    if len(wav) < n:
-        return -100.0
-    frames = np.lib.stride_tricks.sliding_window_view(wav.astype(np.float64), n)[:: n // 2]
-    spec = (np.abs(np.fft.rfft(frames * np.hanning(n), axis=1)) ** 2).mean(axis=0)
-    freqs = np.fft.rfftfreq(n, 1 / sr)
-    low, high = spec[(freqs >= 300) & (freqs < 4000)].sum(), spec[freqs >= 4000].sum()
-    return float(10 * np.log10((high + 1e-12) / (low + 1e-12)))
 
 
 def load_preds(path: Path) -> dict[str, dict]:

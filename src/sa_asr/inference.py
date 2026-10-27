@@ -15,6 +15,7 @@ import numpy as np
 from .audio import SAMPLE_RATE, decode_audio, duration_seconds, split_long_audio
 from .backends import META_FILE, WhisperTranscriber, localize_model
 from .config import PROJECT_ROOT, Language
+from .routing import reroute
 from .textlid import TextLID, combine
 
 CHUNK_BATCH = 8
@@ -23,7 +24,11 @@ CHUNK_BATCH = 8
 # DETECT_MAX_WINDOWS of them; mixed-language detection reads every window.
 DETECT_MIN_S, DETECT_MAX_S = 4.0, 10.0
 DETECT_MAX_WINDOWS = 12
-SWITCH_PENALTY = 2.0  # in log-probability units; see smooth_languages
+# In log-probability units; see smooth_languages. Chosen with scripts/lid_long.py on simulated recordings: 6 instead
+# of 2 raised the share of correctly labelled windows in one-language recordings from 90% to 93% and made
+# two-language recordings come out right far more often (stretches of 2+ windows), at a small cost for a
+# switch that lasts a single window.
+SWITCH_PENALTY = 6.0
 TEXT_WEIGHT = 1.0  # how much the spelling of a window's text counts against the audio detector
 
 
@@ -155,6 +160,7 @@ def transcribe_audio(
     text_lid: TextLID | None = None,
     text_weight: float = TEXT_WEIGHT,
     on_progress: Progress | None = None,
+    second_model=None,
 ) -> dict:
     """Transcribe audio of any length.
 
@@ -170,6 +176,8 @@ def transcribe_audio(
     A zero-shot model with no language lets Whisper choose.
     on_progress(what, done, total) is called before each batch of windows; a caller that raises
     from it (a Stop button) cancels the run between batches.
+    second_model: an optional second transcriber (routing.load_second_model). Parts of the result in its six
+      languages that are long and wideband are transcribed again by it (see routing.py).
     """
     t0 = time.time()
     detected = None
@@ -233,6 +241,8 @@ def transcribe_audio(
             for (start, chunk), text in zip(chunks, texts)
         ]
 
+    rerouted = reroute(segments, wav, second_model, on_progress) if second_model is not None else 0
+
     share: dict[str, float] = {}
     for a, b, lang in runs:
         if lang is not None:
@@ -244,6 +254,7 @@ def transcribe_audio(
         "language": next(iter(share), None),  # the main language (most audio)
         "languages": share,  # share of the audio per language; more than one = mixed
         "detected": detected,
+        "rerouted": rerouted,  # segments re-transcribed by the second model
         "duration": duration_seconds(wav),
         "elapsed": time.time() - t0,
     }

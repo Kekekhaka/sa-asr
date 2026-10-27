@@ -18,6 +18,7 @@ from sa_asr.audio import duration_seconds
 from sa_asr.config import PROJECT_ROOT, load_languages
 from sa_asr.feedback import FEEDBACK_DIR, save_correction, summary
 from sa_asr.inference import load_audio, load_transcriber, resolve_model, transcribe_audio
+from sa_asr.routing import DSFSI_MODEL, MIN_SECONDS, load_second_model
 from sa_asr.textlid import DEFAULT_PATH as TEXT_LID_PATH, TextLID
 from sa_asr.translate import ROUTES, can_translate, translate_segments
 
@@ -46,6 +47,11 @@ def get_model(model: str, finetuned: bool):
     return load_transcriber(model, finetuned)
 
 
+@st.cache_resource(show_spinner=False)
+def get_second_model():
+    return load_second_model()
+
+
 def fmt_time(seconds: float) -> str:
     m, s = divmod(int(round(seconds)), 60)
     return f"{m}:{s:02d}"
@@ -68,6 +74,14 @@ with st.sidebar:
         )
     num_beams = st.slider("Beam size", 1, 5, 1, help="Higher is slightly more accurate and slower.")
     st.caption(f"Running on **{'GPU' if torch.cuda.is_available() else 'CPU'}**. On CPU, large models are slow.")
+    use_second = st.checkbox(
+        "Second model for clear speech",
+        value=False,
+        help="For isiZulu, isiXhosa, Sesotho, Setswana, Xitsonga and Tshivenda: parts of a recording that are at "
+        f"least {MIN_SECONDS:.0f} s long and not telephone quality are transcribed again by "
+        f"{DSFSI_MODEL} (MIT licence, trained on Swivuriso), which was about 5 points more accurate on such "
+        "speech in our tests. Needs about 3 GB more memory, is slower, and downloads the model the first time.",
+    )
 
 # --- main ------------------------------------------------------------------------------
 
@@ -125,8 +139,16 @@ if st.button("Transcribe", type="primary", disabled=source is None, width="stret
     def show_progress(what: str, done: int, total: int) -> None:
         bar.progress(min(done / max(total, 1), 1.0), text=f"{what}… ({done}/{total} parts done)")
 
+    second = None
+    if use_second:
+        with st.spinner("Loading the second model (the first time this downloads about 3 GB)…"):
+            try:
+                second = get_second_model()
+            except Exception as e:
+                st.warning(f"Couldn't load the second model, using the main one only: {e}")
     result = transcribe_audio(model, wav, registry, None if lang_choice in AUTO_LABELS else lang_choice,
-                              mixed=lang_choice == "auto", text_lid=get_text_lid(), on_progress=show_progress)
+                              mixed=lang_choice == "auto", text_lid=get_text_lid(), on_progress=show_progress,
+                              second_model=second)
     bar.empty()
     # The audio and the model's first answer are kept for corrections (what it got wrong).
     st.session_state.update(
@@ -147,6 +169,9 @@ if result:
     c1.metric("Language", lang_label)
     c2.metric("Audio", fmt_time(result["duration"]))
     c3.metric("Processing time", f"{result['elapsed']:.1f} s")
+    if result.get("rerouted"):
+        st.caption(f"{result['rerouted']} clear part(s) were transcribed by the second model "
+                   f"({DSFSI_MODEL}, MIT licence).")
     if mixed_result:
         st.caption("Languages: " + " · ".join(f"{registry[c].name} {s:.0%}" for c, s in shares.items()))
     elif result["detected"]:
@@ -161,7 +186,8 @@ if result:
         with st.expander(f"Segments ({len(result['segments'])})", expanded=mixed_result):
             for seg in result["segments"]:
                 tag = f" **{registry[seg['language']].name}**" if mixed_result and seg.get("language") else ""
-                st.markdown(f"`{fmt_time(seg['start'])}–{fmt_time(seg['end'])}`{tag} {seg['text']}")
+                engine = " _(second model)_" if seg.get("engine") else ""
+                st.markdown(f"`{fmt_time(seg['start'])}–{fmt_time(seg['end'])}`{tag}{engine} {seg['text']}")
 
     # --- English translation -------------------------------------------------------------
     rid = st.session_state["rid"]
@@ -207,10 +233,21 @@ if result:
             st.session_state.update(result=redo, rid=rid + 1)  # keeps first_prediction
             st.rerun()
         fix_text = st.text_area("Correct transcript", result["text"], height=150, key=f"fix_text_{rid}")
-        if st.button("Save correction", type="primary", disabled=not fix_text.strip()):
+        present = st.multiselect(
+            "Languages heard in this recording", fix_options, default=[fix_lang],
+            format_func=lambda c: registry[c].name, key=f"present_{rid}_{fix_lang}",
+            help="Add more than one for mixed or code-switched recordings. Used to test language detection.",
+        )
+        allowed = st.checkbox(
+            "I have permission to keep this recording (the speakers know it is saved and why).",
+            key=f"allowed_{rid}",
+        )
+        if st.button("Save correction", type="primary", disabled=not (fix_text.strip() and allowed)):
             first_lang, first_text = st.session_state["first_prediction"]
             save_correction(st.session_state["wav"], fix_lang, fix_text, predicted_lang=first_lang,
-                            predicted_text=first_text, model=st.session_state["model_used"])
+                            predicted_text=first_text, model=st.session_state["model_used"],
+                            languages_present=present)
             stats = summary()
             st.success(f"Saved. {stats['count']} corrections so far ({stats['hours'] * 60:.0f} min of audio) "
-                       f"in {FEEDBACK_DIR.relative_to(PROJECT_ROOT)}.")
+                       f"in {FEEDBACK_DIR.relative_to(PROJECT_ROOT)}. Run `python scripts/feedback.py report` "
+                       "to see how the model did on them.")

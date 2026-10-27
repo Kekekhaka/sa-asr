@@ -160,6 +160,7 @@ def analyze(train: dict, test: dict, out_dir: Path, texts_dir: Path, records_pat
         if a > best_acc:
             best_wd, best_acc = wd, a
     W, b = fit_softmax(Xtr, ytr, len(codes), best_wd)
+    (PROJECT_ROOT / "models").mkdir(exist_ok=True)
     np.savez(PROJECT_ROOT / "models" / "lid_probe.npz", W=W.numpy(), b=b.numpy(), mu=mu, sd=sd, codes=np.array(codes),
              layers=np.array(LAYERS))
 
