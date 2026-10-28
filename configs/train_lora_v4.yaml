@@ -1,7 +1,7 @@
 # Round 4: same data mix as round 3, with more realistic augmentation.
 #   python scripts/train.py --config configs/train_lora_v4.yaml --hub-repo <user>/sa-asr-whisper-lora-v4 --resume
 # (on Kaggle: STAGE = "train_v4", run it twice: each session stops after ~11 h and the second resumes;
-#  add the MUSAN dataset to the notebook inputs first, see noise_dir below)
+#  attach the MUSAN dataset to the notebook first, see noise_dir below)
 #
 # Why (2026-10-28): rounds 1-3 only saw white noise and a simulated phone line, which is a weak stand-in
 # for voice notes and meetings. Round 4 adds speed changes (0.9x / 1.1x, more speaking rates), simulated
@@ -43,8 +43,9 @@ augment:
   reverb_prob: 0.2
   # MUSAN's noise/ folder only (machines, traffic, crowds). Its speech/ folder is left out: mixed-in talking
   # at 0-20 dB would teach the model to transcribe or ignore other voices without a matching transcript.
-  # Check the path on Kaggle with `ls /kaggle/input`; training stops if no audio files are found there.
-  noise_dir: /kaggle/input/musan/musan/noise
+  # Attach the Kaggle dataset nhattruongdev/musan-noise (full MUSAN) to the notebook. Without Kaggle, run
+  # scripts/get_musan.py and use data/musan/musan/noise. Training stops if no audio files are found.
+  noise_dir: /kaggle/input/datasets/nhattruongdev/musan-noise/musan/noise
 
 lora:                 # r/alpha/targets come from the adapter being continued
   enabled: true
