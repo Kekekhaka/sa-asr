@@ -46,6 +46,37 @@ def test_languages_present_always_includes_the_corrected_language(tmp_path):
     assert plain["languages_present"] == ["sot"]
 
 
+def test_word_languages_are_kept_and_added_to_the_languages_present(tmp_path):
+    rec = save_correction(clip(1), "nso", "ke a leboga thank you", predicted_lang="sot", predicted_text="x",
+                          model="m", root=tmp_path, word_langs=["nso", "nso", "nso", "eng", "eng"])
+    assert rec["word_langs"] == ["nso", "nso", "nso", "eng", "eng"] and rec["languages_present"] == ["eng", "nso"]
+    plain = save_correction(clip(2), "nso", "ke a leboga", predicted_lang="nso", predicted_text="x", model="m",
+                            root=tmp_path)
+    assert plain["word_langs"] == ["nso"] * 3
+    import pytest
+
+    with pytest.raises(ValueError):
+        save_correction(clip(3), "nso", "two words", predicted_lang="nso", predicted_text="x", model="m",
+                        root=tmp_path, word_langs=["nso"])
+    export_parquet(tmp_path / "all.parquet", tmp_path)
+    rows = pq.read_table(tmp_path / "all.parquet").to_pylist()
+    assert sorted(len(r["word_langs"]) for r in rows) == [3, 5]
+
+
+def test_segments_are_kept_with_their_languages(tmp_path):
+    parts = [{"start": 0.0, "end": 5.0, "lang": "nso", "text": "Thobela ka mošate"},
+             {"start": 5.0, "end": 11.0, "lang": "xho", "text": "Sivukile"}]
+    rec = save_correction(clip(1), "xho", "Thobela ka mošate Sivukile", predicted_lang="sot", predicted_text="x",
+                          model="m", root=tmp_path, segments=parts)
+    assert rec["segments"] == parts and rec["languages_present"] == ["nso", "xho"]
+    plain = save_correction(clip(2), "nso", "ke a leboga", predicted_lang="nso", predicted_text="x", model="m",
+                            root=tmp_path)
+    assert plain["segments"] == [{"start": 0.0, "end": 1.0, "lang": "nso", "text": "ke a leboga"}]
+    export_parquet(tmp_path / "all.parquet", tmp_path)
+    rows = pq.read_table(tmp_path / "all.parquet").to_pylist()
+    assert sorted(len(r["segments"]) for r in rows) == [1, 2]
+
+
 def test_report_measures_language_and_word_accuracy(tmp_path):
     save_correction(clip(1), "zul", "ngiyabonga kakhulu", predicted_lang="zul", predicted_text="ngiyabonga kakhulu",
                     model="m", root=tmp_path)

@@ -53,9 +53,16 @@ def save_correction(
     predicted_text: str,
     model: str,
     languages_present: list[str] | None = None,
+    word_langs: list[str] | None = None,
+    segments: list[dict] | None = None,
     root: Path = FEEDBACK_DIR,
 ) -> dict:
-    """Store one corrected example; returns the stored record."""
+    """Store one corrected example; returns the stored record. word_langs gives the language of each word of
+    text (split on spaces) for code-switched speech; without it every word is in `lang`. segments are the
+    corrected parts of a mixed recording ({start, end, lang, text}); without them the whole clip is one part."""
+    words = text.split()
+    if word_langs is not None and len(word_langs) != len(words):
+        raise ValueError(f"word_langs has {len(word_langs)} labels for {len(words)} words")
     log_file, audio_dir = _paths(root)
     audio_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(np.ascontiguousarray(wav, dtype=np.float32).tobytes()).hexdigest()[:10]
@@ -68,7 +75,12 @@ def save_correction(
         "predicted_lang": predicted_lang,
         "predicted_text": predicted_text,
         # every language heard in the recording (more than one for code-switched or mixed audio)
-        "languages_present": sorted(set(languages_present or [lang]) | {lang}),
+        "languages_present": sorted(set(languages_present or [lang]) | {lang} | set(word_langs or [])
+                                    | {s["lang"] for s in segments or []}),
+        "word_langs": word_langs or [lang] * len(words),
+        "segments": [{"start": round(float(s["start"]), 2), "end": round(float(s["end"]), 2), "lang": s["lang"],
+                      "text": s["text"].strip()} for s in segments or []]
+                    or [{"start": 0.0, "end": round(duration_seconds(wav), 2), "lang": lang, "text": text.strip()}],
         "language_corrected": predicted_lang is not None and predicted_lang != lang,
         "text_corrected": predicted_text.strip() != text.strip(),
         "split": split_of(utt_id),
@@ -79,6 +91,47 @@ def save_correction(
     with log_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return record
+
+
+def upload_correction(record: dict, repo: str, root: Path = FEEDBACK_DIR) -> None:
+    """Copy one saved correction to a private Hub dataset (raw/<utt_id>.json + raw/<utt_id>.flac). Used where the
+    local disk does not last, such as a Hugging Face Space; pull() brings them back into a local folder."""
+    from huggingface_hub import CommitOperationAdd, HfApi
+
+    _, audio_dir = _paths(root)
+    utt = record["utt_id"]
+    api = HfApi()
+    api.create_repo(repo, repo_type="dataset", private=True, exist_ok=True)
+    api.create_commit(repo, repo_type="dataset", commit_message=f"correction {utt}", operations=[
+        CommitOperationAdd(path_in_repo=f"raw/{utt}.json",
+                           path_or_fileobj=json.dumps(record, ensure_ascii=False).encode()),
+        CommitOperationAdd(path_in_repo=f"raw/{utt}.flac", path_or_fileobj=str(audio_dir / f"{utt}.flac")),
+    ])
+
+
+def pull(repo: str, root: Path = FEEDBACK_DIR) -> int:
+    """Add the corrections uploaded to `repo` (by upload_correction) that are not in `root` yet; returns how many."""
+    import shutil
+
+    from huggingface_hub import snapshot_download
+
+    log_file, audio_dir = _paths(root)
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    have = set()
+    if log_file.exists():
+        have = {json.loads(x)["utt_id"] for x in log_file.read_text(encoding="utf-8").splitlines() if x.strip()}
+    raw = Path(snapshot_download(repo, repo_type="dataset", allow_patterns=["raw/*"])) / "raw"
+    new = 0
+    with log_file.open("a", encoding="utf-8") as f:
+        for p in sorted(raw.glob("*.json")) if raw.exists() else []:
+            rec = json.loads(p.read_text(encoding="utf-8"))
+            flac = p.with_suffix(".flac")
+            if rec["utt_id"] in have or not flac.exists():
+                continue
+            shutil.copyfile(flac, audio_dir / flac.name)
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            new += 1
+    return new
 
 
 def load_corrections(root: Path = FEEDBACK_DIR) -> list[dict]:
@@ -168,6 +221,9 @@ def export_parquet(out_file: Path, root: Path = FEEDBACK_DIR, split: str | None 
             "predicted_lang": r["predicted_lang"],
             "predicted_text": r["predicted_text"],
             "languages_present": r.get("languages_present") or [r["lang"]],
+            "word_langs": r.get("word_langs") or [r["lang"]] * len(r["text"].split()),
+            "segments": r.get("segments") or [{"start": 0.0, "end": r["duration"], "lang": r["lang"],
+                                               "text": r["text"]}],
             "duration": r["duration"],
         })
     out_file.parent.mkdir(parents=True, exist_ok=True)

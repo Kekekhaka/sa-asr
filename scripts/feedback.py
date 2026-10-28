@@ -3,6 +3,7 @@
     python scripts/feedback.py stats
     python scripts/feedback.py report                                 # how the model did on your corrections
     python scripts/feedback.py push --repo <user>/sa-asr-feedback     # private HF dataset
+    python scripts/feedback.py pull --repo <user>/sa-asr-feedback     # corrections saved in the Space -> here
 
 push writes the corrections as Parquet files (training-corpus layout): data/train-00000.parquet, which a
 Kaggle fine-tuning run can read like any other corpus, and test/test-00000.parquet, a fixed ~30% that must
@@ -19,18 +20,22 @@ import tempfile
 from pathlib import Path
 
 import sa_asr  # noqa: F401  (applies the corporate-certificate fix before any HF call)
-from sa_asr.feedback import FEEDBACK_DIR, export_parquet, report, summary
+from sa_asr.feedback import FEEDBACK_DIR, export_parquet, pull, report, summary
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["stats", "report", "push"])
-    ap.add_argument("--repo", help="for push: private HF dataset repo, e.g. <user>/sa-asr-feedback")
+    ap.add_argument("action", choices=["stats", "report", "push", "pull"])
+    ap.add_argument("--repo", help="for push/pull: private HF dataset repo, e.g. <user>/sa-asr-feedback")
     args = ap.parse_args()
 
+    if args.action == "pull":
+        if not args.repo:
+            sys.exit("pull needs --repo <user>/sa-asr-feedback")
+        print(f"Added {pull(args.repo)} new corrections from {args.repo}")
     stats = summary()
     print(json.dumps(stats, indent=2))
-    if args.action == "stats":
+    if args.action in ("stats", "pull"):
         return
     if args.action == "report":
         print(json.dumps(report(), indent=2, ensure_ascii=False))

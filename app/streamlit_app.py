@@ -10,13 +10,20 @@ folder or Hugging Face id (e.g. openai/whisper-large-v3-turbo) can be entered in
 from __future__ import annotations
 
 import os
+import sys
+import time
+from pathlib import Path
 
+# On a Hugging Face Space (scripts/space.py) the package is not installed: use src/ next to the app.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+import pandas as pd
 import streamlit as st
 import torch
 
 from sa_asr.audio import duration_seconds
 from sa_asr.config import PROJECT_ROOT, load_languages
-from sa_asr.feedback import FEEDBACK_DIR, save_correction, summary
+from sa_asr.feedback import FEEDBACK_DIR, save_correction, summary, upload_correction
 from sa_asr.inference import load_audio, load_transcriber, resolve_model, transcribe_audio
 from sa_asr.routing import DSFSI_MODEL, MIN_SECONDS, load_second_model
 from sa_asr.textlid import DEFAULT_PATH as TEXT_LID_PATH, TextLID
@@ -26,6 +33,8 @@ UPLOAD_TYPES = ["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac", "webm", "mp4"
 DEFAULT_FINETUNED = PROJECT_ROOT / "outputs" / "whisper-turbo-sa-lora" / "final"
 # The trained model on the Hub (train.py --hub-repo); set SA_ASR_MODEL to use another one.
 DEFAULT_HUB_MODEL = os.environ.get("SA_ASR_MODEL", "KekeCode/sa-asr-whisper-lora-v3")
+# Set on the Space (scripts/space.py): saved corrections are also copied to this private dataset.
+FEEDBACK_REPO = os.environ.get("SA_ASR_FEEDBACK_REPO")
 
 st.set_page_config(page_title="South African Speech-to-Text", page_icon="🎙️", layout="centered")
 registry = load_languages()
@@ -110,6 +119,9 @@ with tab_upload:
         st.audio(uploaded)
 with tab_record:
     recorded = st.audio_input("Record a voice message")
+    if recorded:
+        st.download_button("Download recording", recorded.getvalue(), mime="audio/wav",
+                           file_name=f"recording-{time.strftime('%Y%m%d-%H%M%S')}.wav")
 
 source = recorded or uploaded
 if source is not None:
@@ -214,29 +226,80 @@ if result:
             st.rerun()
 
     # --- corrections -------------------------------------------------------------------
-    with st.expander("Wrong language or words? Correct it"):
+    with st.expander("Wrong language or words? Correct it", expanded=False):
         st.caption(
-            "Pick the right language and fix the text. Saved corrections (audio + text) are kept in "
+            "Fix the language and the text. Saved corrections (audio + text) are kept in "
             "`data/feedback/` and can be used to fine-tune the model further. Only save recordings you "
             "have permission to use."
         )
         fix_options = trained_langs if finetuned else list(registry)
-        fix_lang = st.selectbox(
-            "Correct language", fix_options, index=fix_options.index(lang) if lang in fix_options else 0,
-            format_func=lambda c: registry[c].name, key=f"fix_lang_{rid}",
-        )
-        if fix_lang != lang and st.button(f"Transcribe again as {registry[fix_lang].name}"):
-            with st.spinner(f"Transcribing as {registry[fix_lang].name}…"):
-                model = get_model(model_ref, finetuned)
-                model.num_beams = num_beams
-                redo = transcribe_audio(model, st.session_state["wav"], registry, fix_lang)
-            st.session_state.update(result=redo, rid=rid + 1)  # keeps first_prediction
-            st.rerun()
-        fix_text = st.text_area("Correct transcript", result["text"], height=150, key=f"fix_text_{rid}")
+        names = {registry[c].name: c for c in fix_options}
+        segs = [s for s in result["segments"] if s["text"]]
+        fix_segments = None
+        if len(segs) > 1:
+            # One row per part: its own language and text, so a mixed recording is corrected part by part.
+            st.markdown("**Correct each part** (language and text)")
+            table = st.data_editor(
+                pd.DataFrame({
+                    "Time": [f"{fmt_time(s['start'])}–{fmt_time(s['end'])}" for s in segs],
+                    "Language": [registry[s["language"]].name if s.get("language") in fix_options
+                                 else registry[fix_options[0]].name for s in segs],
+                    "Text": [s["text"] for s in segs],
+                }),
+                column_config={
+                    "Time": st.column_config.TextColumn(disabled=True, width="small"),
+                    "Language": st.column_config.SelectboxColumn(options=list(names), required=True, width="small"),
+                    "Text": st.column_config.TextColumn(width="large"),
+                },
+                hide_index=True, width="stretch", key=f"segs_{rid}",
+            )
+            fix_segments = [
+                {"start": s["start"], "end": s["end"], "lang": names[lg], "text": str(tx).strip()}
+                for s, lg, tx in zip(segs, table["Language"].tolist(), table["Text"].tolist())
+            ]
+            fix_segments = [s for s in fix_segments if s["text"]]
+            fix_text = " ".join(s["text"] for s in fix_segments)
+            seconds: dict[str, float] = {}
+            for s in fix_segments:
+                seconds[s["lang"]] = seconds.get(s["lang"], 0.0) + s["end"] - s["start"]
+            fix_lang = max(seconds, key=seconds.get) if seconds else lang
+            default_word_langs = [s["lang"] for s in fix_segments for _ in s["text"].split()]
+            st.caption(f"Main language (most time): {registry[fix_lang].name}")
+        else:
+            fix_lang = st.selectbox(
+                "Correct language", fix_options, index=fix_options.index(lang) if lang in fix_options else 0,
+                format_func=lambda c: registry[c].name, key=f"fix_lang_{rid}",
+            )
+            if fix_lang != lang and st.button(f"Transcribe again as {registry[fix_lang].name}"):
+                with st.spinner(f"Transcribing as {registry[fix_lang].name}…"):
+                    model = get_model(model_ref, finetuned)
+                    model.num_beams = num_beams
+                    redo = transcribe_audio(model, st.session_state["wav"], registry, fix_lang)
+                st.session_state.update(result=redo, rid=rid + 1)  # keeps first_prediction
+                st.rerun()
+            fix_text = st.text_area("Correct transcript", result["text"], height=150, key=f"fix_text_{rid}")
+            default_word_langs = [fix_lang] * len(fix_text.split())
+        word_langs = default_word_langs if fix_segments else None
+        words = fix_text.split()
+        if words and st.checkbox("Some words are in another language (code-switching)", key=f"cs_{rid}"):
+            st.caption("Set the language of each word that differs (e.g. English words inside a Sepedi sentence).")
+            table = st.data_editor(
+                pd.DataFrame({"Word": words, "Language": [registry[c].name for c in default_word_langs]}),
+                column_config={
+                    "Word": st.column_config.TextColumn(disabled=True),
+                    "Language": st.column_config.SelectboxColumn(options=list(names), required=True),
+                },
+                hide_index=True, width="stretch",
+                # a new key when the words or their default languages change, so the table matches them
+                key=f"words_{rid}_{hash((fix_text, tuple(default_word_langs)))}",
+            )
+            word_langs = [names[n] for n in table["Language"].tolist()]
+        heard = sorted(set(word_langs or [fix_lang]) | {fix_lang})
         present = st.multiselect(
-            "Languages heard in this recording", fix_options, default=[fix_lang],
-            format_func=lambda c: registry[c].name, key=f"present_{rid}_{fix_lang}",
-            help="Add more than one for mixed or code-switched recordings. Used to test language detection.",
+            "Languages heard in this recording", fix_options, default=heard,
+            format_func=lambda c: registry[c].name, key=f"present_{rid}_{'-'.join(heard)}",
+            help="Filled in from the parts and words above; add any other language you heard. Used to test "
+            "language detection.",
         )
         allowed = st.checkbox(
             "I have permission to keep this recording (the speakers know it is saved and why).",
@@ -244,9 +307,16 @@ if result:
         )
         if st.button("Save correction", type="primary", disabled=not (fix_text.strip() and allowed)):
             first_lang, first_text = st.session_state["first_prediction"]
-            save_correction(st.session_state["wav"], fix_lang, fix_text, predicted_lang=first_lang,
-                            predicted_text=first_text, model=st.session_state["model_used"],
-                            languages_present=present)
+            rec = save_correction(st.session_state["wav"], fix_lang, fix_text, predicted_lang=first_lang,
+                                  predicted_text=first_text, model=st.session_state["model_used"],
+                                  languages_present=present, word_langs=word_langs, segments=fix_segments)
+            # On a Space the local disk is wiped on restart, so each correction is also copied to a private dataset.
+            if FEEDBACK_REPO:
+                try:
+                    upload_correction(rec, FEEDBACK_REPO)
+                except Exception as e:
+                    st.error(f"Saved here, but couldn't copy it to {FEEDBACK_REPO} (it will be lost on restart): {e}")
+                    st.stop()
             stats = summary()
             st.success(f"Saved. {stats['count']} corrections so far ({stats['hours'] * 60:.0f} min of audio) "
                        f"in {FEEDBACK_DIR.relative_to(PROJECT_ROOT)}. Run `python scripts/feedback.py report` "
