@@ -15,7 +15,7 @@ import torch
 from datasets import Dataset, IterableDataset, interleave_datasets
 from transformers import Seq2SeqTrainer, TrainerCallback, WhisperProcessor
 
-from .audio import SAMPLE_RATE, augment, decode_audio, duration_seconds
+from .audio import SAMPLE_RATE, augment, decode_audio, duration_seconds, noise_files
 from .config import Language
 from .data import CORPORA, eval_row_audio, stream_corpus
 from .metrics import score
@@ -64,6 +64,9 @@ def make_example_fn(
     telephone_prob: float = 0.0,
     noise_prob: float = 0.0,
     seed: int = 0,
+    speed_prob: float = 0.0,
+    reverb_prob: float = 0.0,
+    noise_dir: str | None = None,
 ):
     """Row in the common schema -> {input_features, labels, keep}.
 
@@ -73,6 +76,9 @@ def make_example_fn(
     utterance, so a run is reproducible.
     """
     fe = processor.feature_extractor
+    noises = noise_files(noise_dir) if noise_dir else None
+    if noise_dir and not noises:
+        raise FileNotFoundError(f"augment.noise_dir has no .wav/.flac/.ogg files: {noise_dir}")
 
     def fn(ex: dict[str, Any]) -> dict[str, Any]:
         wav = decode_audio(ex["audio"])
@@ -81,10 +87,11 @@ def make_example_fn(
         keep = 0.3 <= dur <= max_duration_s and len(ids) > 4 and len(ids) <= max_label_tokens
         feats = None
         if keep:
-            if telephone_prob or noise_prob:
+            if telephone_prob or noise_prob or speed_prob or reverb_prob:
                 rng = np.random.default_rng(zlib.crc32(f"{seed}:{ex['corpus']}:{ex['utt_id']}".encode()))
                 wideband = CORPORA[ex["corpus"]].channel != "telephone"
-                wav = augment(wav, rng, telephone_prob=telephone_prob if wideband else 0.0, noise_prob=noise_prob)
+                wav = augment(wav, rng, telephone_prob=telephone_prob if wideband else 0.0, noise_prob=noise_prob,
+                              speed_prob=speed_prob, reverb_prob=reverb_prob, noise_files_=noises)
             feats = fe(wav, sampling_rate=SAMPLE_RATE).input_features[0]
         return {"input_features": feats, "labels": ids, "keep": keep}
 

@@ -1,0 +1,81 @@
+# Round 4: same data mix as round 3, with more realistic augmentation.
+#   python scripts/train.py --config configs/train_lora_v4.yaml --hub-repo <user>/sa-asr-whisper-lora-v4 --resume
+# (on Kaggle: STAGE = "train_v4", run it twice: each session stops after ~11 h and the second resumes;
+#  add the MUSAN dataset to the notebook inputs first, see noise_dir below)
+#
+# Why (2026-10-28): rounds 1-3 only saw white noise and a simulated phone line, which is a weak stand-in
+# for voice notes and meetings. Round 4 adds speed changes (0.9x / 1.1x, more speaking rates), simulated
+# rooms (reverberation 0.2-0.8 s) and real background noise from MUSAN (CC BY 4.0, OpenSLR 17).
+# Only the augmentation changes, so any difference from round 3 comes from it.
+#
+# Judge it on: `natural_v4` against round 3 (unscripted Swivuriso, 17-31% WER) and Lwazi (phone calls,
+# ~32%), and language detection must not drop below round 3.
+
+base_model: openai/whisper-large-v3-turbo
+init_adapter: KekeCode/sa-asr-whisper-lora-v3   # round 3: LoRA weights and the trained language tokens
+output_dir: outputs/whisper-turbo-sa-lora-v4
+
+languages: all
+
+corpora:
+  nchlt: 0.75
+  swivuriso: 6.0
+  nchlt_eng: 1.0
+  lwazi: 1.0
+  fleurs: 1.0
+  openslr32: 0.5
+
+language_weights:
+  nso: 3.0
+  ssw: 3.5
+  afr: 2.5
+  eng: 4.0
+
+text: clean
+max_duration_s: 30
+max_label_tokens: 440
+shuffle_buffer: 64
+
+augment:
+  telephone_prob: 0.3
+  noise_prob: 0.15
+  speed_prob: 0.3
+  reverb_prob: 0.2
+  # MUSAN's noise/ folder only (machines, traffic, crowds). Its speech/ folder is left out: mixed-in talking
+  # at 0-20 dB would teach the model to transcribe or ignore other voices without a matching transcript.
+  # Check the path on Kaggle with `ls /kaggle/input`; training stops if no audio files are found there.
+  noise_dir: /kaggle/input/musan/musan/noise
+
+lora:                 # r/alpha/targets come from the adapter being continued
+  enabled: true
+  train_language_tokens: true
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, out_proj, fc1, fc2]
+
+training:
+  max_steps: 2400     # two Kaggle sessions, as in round 3 (augmentation adds a little CPU time per step)
+  lid_loss_weight: 1.0
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-5
+  warmup_steps: 100
+  lr_scheduler_type: linear
+  weight_decay: 0.0
+  gradient_checkpointing: true
+  eval_steps: 600
+  save_steps: 600
+  save_total_limit: 3
+  logging_steps: 10
+  dataloader_num_workers: 0
+  report_to: none
+  seed: 45            # a different data order from rounds 1-3
+  max_runtime_hours: 11.75
+  checkpoint_every_hours: 2.0
+  stall_timeout_minutes: 40
+
+validation:
+  cache_dir: data/eval_cache
+  max_samples_per_set: 32

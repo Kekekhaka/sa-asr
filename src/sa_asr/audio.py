@@ -9,6 +9,7 @@ and on Colab.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -90,9 +91,58 @@ def add_noise(wav: np.ndarray, rng: np.random.Generator, snr_db: tuple[float, fl
     return (wav + noise).astype(np.float32)
 
 
-def augment(wav: np.ndarray, rng: np.random.Generator, telephone_prob: float = 0.0, noise_prob: float = 0.0) -> np.ndarray:
+def speed_perturb(wav: np.ndarray, rng: np.random.Generator, factors: tuple[float, ...] = (0.9, 1.1),
+                  max_seconds: float = 30.0, sr: int = SAMPLE_RATE) -> np.ndarray:
+    """Speak faster or slower (changes pitch too, as in Kaldi's speed perturbation). Left alone if the slowed
+    audio would pass max_seconds, because Whisper would cut the end off and the text would no longer match."""
+    f = float(rng.choice(factors))
+    if len(wav) / f / sr > max_seconds:
+        return wav
+    return soxr.resample(wav, int(round(sr * f)), sr).astype(np.float32)
+
+
+def reverberate(wav: np.ndarray, rng: np.random.Generator, sr: int = SAMPLE_RATE) -> np.ndarray:
+    """A simulated room: convolve with an exponentially decaying noise burst (reverberation time 0.2-0.8 s)."""
+    rt60 = rng.uniform(0.2, 0.8)
+    t = np.arange(int(rt60 * sr)) / sr
+    rir = rng.normal(size=t.size) * np.exp(-6.9 * t / rt60)  # -60 dB at rt60
+    rir[0] = np.abs(rir).max()  # direct sound
+    rir /= np.sqrt(np.sum(rir**2))
+    n = len(wav) + len(rir) - 1
+    out = np.fft.irfft(np.fft.rfft(wav, n) * np.fft.rfft(rir, n), n)[: len(wav)]
+    return (out * (np.abs(wav).max() / (np.abs(out).max() or 1.0))).astype(np.float32)
+
+
+def noise_files(noise_dir: str | Path) -> list[Path]:
+    return sorted(p for p in Path(noise_dir).rglob("*") if p.suffix.lower() in {".wav", ".flac", ".ogg"})
+
+
+def add_real_noise(wav: np.ndarray, rng: np.random.Generator, files: list[Path],
+                   snr_db: tuple[float, float] = (0.0, 20.0), sr: int = SAMPLE_RATE) -> np.ndarray:
+    """Mix in a random stretch of a noise recording (e.g. MUSAN noise/music/speech babble) at a random SNR."""
+    noise, nsr = sf.read(str(files[int(rng.integers(len(files)))]), dtype="float32", always_2d=True)
+    noise = noise.mean(axis=1)
+    if nsr != sr:
+        noise = soxr.resample(noise, nsr, sr)
+    if len(noise) < len(wav):
+        noise = np.tile(noise, int(np.ceil(len(wav) / max(len(noise), 1))))
+    start = int(rng.integers(0, len(noise) - len(wav) + 1))
+    noise = noise[start : start + len(wav)]
+    p_noise = float(np.mean(noise**2)) or 1e-8
+    p_wav = float(np.mean(wav**2)) or 1e-8
+    scale = np.sqrt(p_wav / (p_noise * 10 ** (rng.uniform(*snr_db) / 10)))
+    return (wav + scale * noise).astype(np.float32)
+
+
+def augment(wav: np.ndarray, rng: np.random.Generator, telephone_prob: float = 0.0, noise_prob: float = 0.0,
+            speed_prob: float = 0.0, reverb_prob: float = 0.0, noise_files_: list[Path] | None = None) -> np.ndarray:
+    """Speed, then room, then noise (real recordings when noise_files_ is given, else white), then phone line."""
+    if speed_prob and rng.random() < speed_prob:
+        wav = speed_perturb(wav, rng)
+    if reverb_prob and rng.random() < reverb_prob:
+        wav = reverberate(wav, rng)
     if noise_prob and rng.random() < noise_prob:
-        wav = add_noise(wav, rng)
+        wav = add_real_noise(wav, rng, noise_files_) if noise_files_ else add_noise(wav, rng)
     if telephone_prob and rng.random() < telephone_prob:
         wav = telephone_channel(wav, rng)
     return wav

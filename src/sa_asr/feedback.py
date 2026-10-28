@@ -125,9 +125,10 @@ def report(root: Path = FEEDBACK_DIR) -> dict:
             out = jiwer.process_words([a for a, _ in pairs], [b if b else "-" for _, b in pairs])
             wer = round(100 * (out.substitutions + out.deletions + out.insertions)
                         / max(out.substitutions + out.deletions + out.hits, 1), 1)
+        cer = round(100 * jiwer.cer([a.replace(" ", "") for a, _ in pairs], [b.replace(" ", "") or "-" for _, b in pairs]), 1) if pairs else None
         right = sum(r["predicted_lang"] == r["lang"] for r in with_lang)
         return {"count": len(recs), "language_right": round(100 * right / len(with_lang), 1) if with_lang else None,
-                "wer": wer}
+                "wer": wer, "cer_nospace": cer}
 
     recs = load_corrections(root)
     for r in recs:

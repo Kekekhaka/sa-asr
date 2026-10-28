@@ -146,6 +146,7 @@ def main():
     example_fn = make_example_fn(
         processor, labels, max_dur, max_label_tokens,
         telephone_prob=aug.get("telephone_prob", 0.0), noise_prob=aug.get("noise_prob", 0.0), seed=seed,
+        speed_prob=aug.get("speed_prob", 0.0), reverb_prob=aug.get("reverb_prob", 0.0), noise_dir=aug.get("noise_dir"),
     )
     train_ds = build_train_stream(
         streams, example_fn, seed=data_seed, shuffle_buffer=cfg.get("shuffle_buffer", 64), max_duration_s=max_dur

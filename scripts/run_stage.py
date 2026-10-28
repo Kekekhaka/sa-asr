@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
 
 
 def gpu_settings() -> dict:
@@ -76,6 +76,10 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
         limit = f" --max-hours {max_hours}" if max_hours else ""
         return [(f"{py} scripts/train.py --config configs/train_lora_v3.yaml {s['batch']} "
                  f"--hub-repo {model_repo}-v3 --resume{limit}", {})]
+    if stage == "train_v4":  # round 4: round 3's data with speed, room and MUSAN noise augmentation
+        limit = f" --max-hours {max_hours}" if max_hours else ""
+        return [(f"{py} scripts/train.py --config configs/train_lora_v4.yaml {s['batch']} "
+                 f"--hub-repo {model_repo}-v4 --resume{limit}", {})]
     if stage == "compare_v2":
         cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
         cfg["models"].append({"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"})
