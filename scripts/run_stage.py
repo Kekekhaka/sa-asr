@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
 
 
 def gpu_settings() -> dict:
@@ -108,24 +108,25 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
             yaml.safe_dump(cfg, f, sort_keys=False)
         return [(f"{py} scripts/evaluate.py --config configs/eval_natural.yaml --max-samples {s['eval_samples']} "
                  f"--sync-repo {results}", {})]
-    if stage in ("compare_v3", "natural_v3"):  # same tables as before, with the round-3 model added (others are cached)
+    if stage in ("compare_v3", "natural_v3", "compare_v4", "natural_v4"):
+        # same tables as before, with the newest round's model added (the earlier models' results are cached)
+        last = int(stage[-1])
         cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
-        cfg["models"] += [{"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"},
-                          {"name": "sa-turbo-lora-v2", "type": "whisper", "model": f"{model_repo}-v2",
-                           "language_mode": "proxy"},
-                          {"name": "sa-turbo-lora-v3", "type": "whisper", "model": f"{model_repo}-v3",
-                           "language_mode": "proxy"}]
-        if stage == "natural_v3":
+        cfg["models"].append({"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"})
+        cfg["models"] += [{"name": f"sa-turbo-lora-v{v}", "type": "whisper", "model": f"{model_repo}-v{v}",
+                           "language_mode": "proxy"} for v in range(2, last + 1)]
+        if stage.startswith("natural"):
             cfg["output_dir"], cfg["eval_sets"] = "results/natural", {"swivuriso_unscripted": "all"}
-            cfg["models"] = [m for m in cfg["models"] if m["name"] in
-                             ("dsfsi-anv-multilingual-turbo", "mms-1b-all", "sa-turbo-lora", "sa-turbo-lora-v2", "sa-turbo-lora-v3")]
+            cfg["models"] = [m for m in cfg["models"] if m["name"].startswith("sa-turbo-lora")
+                             or m["name"] in ("dsfsi-anv-multilingual-turbo", "mms-1b-all")]
         with open(PROJECT_ROOT / "configs/eval_compare.yaml", "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, sort_keys=False)
-        return [(f"{py} scripts/evaluate.py --config configs/eval_compare.yaml --models sa-turbo-lora-v3 "
+        return [(f"{py} scripts/evaluate.py --config configs/eval_compare.yaml --models sa-turbo-lora-v{last} "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
-    if stage == "lid_v3":
-        return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {model_repo}-v3 "
-                 f"--output-dir results/lid_v3 --max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage in ("lid_v3", "lid_v4"):
+        v = stage[-1]
+        return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {model_repo}-v{v} "
+                 f"--output-dir results/lid_v{v} --max-samples {s['eval_samples']} --sync-repo {results}", {})]
     if stage == "text_lid":  # no GPU needed: bigger spelling model from training transcripts, tested on unseen test clips
         preds = "results/baseline/predictions/sa-turbo-lora-v2"
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {}),

@@ -126,7 +126,9 @@ class WhisperTranscriber(Transcriber):
             base_id = json.loads(adapter_cfg.read_text(encoding="utf-8"))["base_model_name_or_path"]
             log.info("[%s] loading base %s + LoRA adapter %s", name, base_id, model)
             base = WhisperForConditionalGeneration.from_pretrained(base_id, dtype=self.dtype)
-            self.model = PeftModel.from_pretrained(base, str(model_path)).merge_and_unload()
+            # Adapter weights are read on the CPU and the merged model is moved afterwards: reading them straight
+            # onto "cuda" fails on a ZeroGPU Space, where the GPU only exists inside @spaces.GPU calls.
+            self.model = PeftModel.from_pretrained(base, str(model_path), torch_device="cpu").merge_and_unload()
             default_processor = str(model_path) if (model_path / "preprocessor_config.json").exists() else base_id
         else:
             self.model = WhisperForConditionalGeneration.from_pretrained(model, dtype=self.dtype)
