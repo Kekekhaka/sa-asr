@@ -15,7 +15,8 @@
 # corpora
 #   Config name of this language in each corpus (see src/sa_asr/data.py). Omit a corpus
 #   if it does not cover the language. For multilingual corpora (lwazi) the value is
-#   that corpus's name for the language.
+#   that corpus's name for the language. spcs/sama/multipron/soap/ast: configs of the private SADiLaR dataset made by
+#   scripts/convert_sadilar.py (none for siSwati, isiNdebele or Xitsonga).
 
 languages:
   eng:
@@ -23,43 +24,43 @@ languages:
     whisper_token: en
     whisper_native: true
     mms_adapter: eng
-    corpora: {nchlt_eng: default}
+    corpora: {nchlt_eng: default, multipron: multipron_eng, soap: soap_eng, ast: ast_eng}
   afr:
     name: Afrikaans
     whisper_token: af
     whisper_native: true
     mms_adapter: afr
-    corpora: {nchlt: afr, fleurs: af_za, openslr32: af_za}
+    corpora: {nchlt: afr, fleurs: af_za, openslr32: af_za, sama: sama_afr, multipron: multipron_afr, ast: ast_afr}
   zul:
     name: isiZulu
     whisper_token: sn
     whisper_native: false
     mms_adapter: zul
-    corpora: {nchlt: zul, swivuriso: zul, swivuriso_unscripted: zul, fleurs: zu_za, lwazi: isizulu}
+    corpora: {nchlt: zul, swivuriso: zul, swivuriso_unscripted: zul, fleurs: zu_za, lwazi: isizulu, sama: sama_zul, multipron: multipron_zul, soap: soap_zul, ast: ast_zul}
   xho:
     name: isiXhosa
     whisper_token: sw
     whisper_native: false
     mms_adapter: xho
-    corpora: {nchlt: xho, swivuriso: xho, swivuriso_unscripted: xho, fleurs: xh_za, lwazi: isixhosa, openslr32: xh_za}
+    corpora: {nchlt: xho, swivuriso: xho, swivuriso_unscripted: xho, fleurs: xh_za, lwazi: isixhosa, openslr32: xh_za, sama: sama_xho, soap: soap_xho, ast: ast_xho}
   nso:
     name: Sepedi
     whisper_token: ha
     whisper_native: false
     mms_adapter: nso
-    corpora: {nchlt: nso, fleurs: nso_za, lwazi: sepedi}
+    corpora: {nchlt: nso, fleurs: nso_za, lwazi: sepedi, spcs: spcs_nso, sama: sama_nso}
   sot:
     name: Sesotho
     whisper_token: so
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: sot, swivuriso: sot, swivuriso_unscripted: sot, lwazi: sesotho, openslr32: st_za}
+    corpora: {nchlt: sot, swivuriso: sot, swivuriso_unscripted: sot, lwazi: sesotho, openslr32: st_za, sama: sama_sot, multipron: multipron_sot, soap: soap_sot, ast: ast_sot}
   tsn:
     name: Setswana
     whisper_token: mg
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: tsn, swivuriso: tsn, swivuriso_unscripted: tsn, lwazi: setswana, openslr32: tn_za}
+    corpora: {nchlt: tsn, swivuriso: tsn, swivuriso_unscripted: tsn, lwazi: setswana, openslr32: tn_za, soap: soap_tsn}
   tso:
     name: Xitsonga
     whisper_token: am
@@ -71,7 +72,7 @@ languages:
     whisper_token: yo
     whisper_native: false
     mms_adapter: null
-    corpora: {nchlt: ven, swivuriso: ven, swivuriso_unscripted: ven, lwazi: tshivenda}
+    corpora: {nchlt: ven, swivuriso: ven, swivuriso_unscripted: ven, lwazi: tshivenda, sama: sama_ven}
   ssw:
     name: siSwati
     whisper_token: ln

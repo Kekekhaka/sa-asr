@@ -68,6 +68,9 @@ class CorpusSpec:
     row_filter: tuple[str, str] | None = None
 
 
+# Where scripts/convert_sadilar.py put the SADiLaR corpora (a private dataset of the account that ran it).
+SADILAR_REPO = os.environ.get("SA_ASR_SADILAR_REPO", "KekeCode/sa-asr-sadilar")
+
 CORPORA: dict[str, CorpusSpec] = {
     "nchlt": CorpusSpec(
         name="nchlt",
@@ -152,6 +155,24 @@ CORPORA: dict[str, CorpusSpec] = {
         language_column="language",
         channel="telephone",
     ),
+    # SADiLaR corpora, converted by scripts/convert_sadilar.py into one private dataset (one config per corpus and
+    # language, e.g. sama_nso). Keep it and models trained on it private: the soap opera is research only.
+    **{name: CorpusSpec(
+        name=name,
+        repo=SADILAR_REPO,
+        text_column="text",
+        id_column="utt_id",
+        speaker_column="speaker",
+        splits={"train": "train", "validation": "validation", "test": "test"},
+        license=lic,
+        channel=channel,
+    ) for name, lic, channel in [
+        ("spcs", "CC-BY-2.5-ZA", "wideband"),  # Sepedi-English code-switched prompts, ~10 h
+        ("sama", "CC-BY-4.0", "wideband"),  # SABC radio news and drama, manually verified, ~150 h
+        ("multipron", "CC-BY-3.0", "wideband"),  # read proper names, ~8 h
+        ("soap", "research only", "wideband"),  # spontaneous code-switched soap-opera speech, ~27 h
+        ("ast", "CC-BY-2.5-ZA", "telephone"),  # African Speech Technology telephone corpora
+    ]},
 }
 
 # The training stream's audio column: the same {bytes, path} struct as Audio(decode=False),
