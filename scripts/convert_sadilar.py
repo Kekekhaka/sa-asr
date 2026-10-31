@@ -22,6 +22,7 @@ import csv
 import io
 import logging
 import shutil
+import subprocess
 import tarfile
 import tempfile
 import urllib.request
@@ -112,10 +113,26 @@ def flac(wav: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+BAD_AUDIO = [0]  # files neither soundfile nor ffmpeg could decode (skipped, counted)
+
+
 def read_wav(data: bytes) -> np.ndarray:
+    """Decode to 16 kHz mono. Falls back to ffmpeg for files libsndfile rejects (mislabelled
+    mp3/odd WAV codecs); returns an empty array for undecodable files, which Writer.add skips."""
     import soxr
 
-    x, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
+    try:
+        x, sr = sf.read(io.BytesIO(data), dtype="float32", always_2d=True)
+    except Exception:
+        try:
+            out = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-f", "f32le", "-ac", "1",
+                                  "-ar", str(SR), "pipe:1"], input=data, capture_output=True, check=True).stdout
+            return np.frombuffer(out, dtype=np.float32).copy()
+        except Exception:
+            BAD_AUDIO[0] += 1
+            if BAD_AUDIO[0] <= 5:
+                log.warning("undecodable audio skipped (%d bytes, starts %r)", len(data), data[:12])
+            return np.zeros(0, dtype=np.float32)
     x = x.mean(axis=1)
     return soxr.resample(x, sr, SR).astype(np.float32) if sr != SR else x
 
@@ -337,6 +354,9 @@ def main() -> None:
         w = Writer(out)
         CONVERTERS[name](work, w)
         configs = w.finish()
+        if BAD_AUDIO[0]:
+            log.warning("%s: %d undecodable audio files skipped", name, BAD_AUDIO[0])
+            BAD_AUDIO[0] = 0
         for c in configs:
             log.info("%s: %s", c, ", ".join(f"{s} {h:.1f} h" for s, h in sorted(w.stats[c].items())))
         api.upload_folder(repo_id=args.repo, repo_type="dataset", folder_path=str(out),

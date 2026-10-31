@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "sadilar_inspect", "sadilar_data", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "sadilar_inspect", "sadilar_data", "sadilar_v4", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
 
 
 def gpu_settings() -> dict:
@@ -146,6 +146,16 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
         # second pass (2026-11-01): the three corpora whose transcripts the first pass did not show; for the soap opera
         # only its 33 MB XML (the audio layout is known)
         return [(f"{py} scripts/inspect_sadilar.py --only sama_nso soap ast_be --match soap=5lang.xml "
+                 f"--sync-repo {results}", {})]
+    if stage == "sadilar_v4":  # round 4 (and dsfsi-anv) on the SADiLaR test splits: the baseline the next round must beat
+        cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
+        cfg["output_dir"] = "results/sadilar"
+        cfg["eval_sets"] = {c: "all" for c in ("soap", "spcs", "sama", "ast", "multipron")}
+        cfg["models"] = [m for m in cfg["models"] if m["name"] == "dsfsi-anv-multilingual-turbo"] + [
+            {"name": "sa-turbo-lora-v4", "type": "whisper", "model": f"{model_repo}-v4", "language_mode": "proxy"}]
+        with open(PROJECT_ROOT / "configs/eval_sadilar.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+        return [(f"{py} scripts/evaluate.py --config configs/eval_sadilar.yaml --max-samples {s['eval_samples']} "
                  f"--sync-repo {results}", {})]
     if stage == "sadilar_data":  # CPU only: SADiLaR corpora -> private dataset in the training layout (resumable)
         return [(f"{py} scripts/convert_sadilar.py --repo {user}/sa-asr-sadilar", {})]
