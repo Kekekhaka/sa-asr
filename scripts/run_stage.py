@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "sadilar_inspect", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
 
 
 def gpu_settings() -> dict:
@@ -142,6 +142,11 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
                 (f"{py} scripts/lm_tiebreak.py --config configs/eval_baseline.yaml --model {model_repo}-v4 "
                  f"--lid results/lid_v4/predictions.jsonl --output-dir results/lm_tiebreak_v4 "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "sadilar_inspect":  # CPU only: download SADiLaR speech corpora and report their layout (for a converter)
+        # second pass (2026-11-01): the three corpora whose transcripts the first pass did not show; for the soap opera
+        # only its 33 MB XML (the audio layout is known)
+        return [(f"{py} scripts/inspect_sadilar.py --only sama_nso soap ast_be --match soap=5lang.xml "
+                 f"--sync-repo {results}", {})]
     if stage == "text_lid":  # no GPU needed: bigger spelling model from training transcripts, tested on unseen test clips
         preds = "results/baseline/predictions/sa-turbo-lora-v2"
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {}),
