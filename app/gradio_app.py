@@ -248,6 +248,8 @@ BUSY = """<div class="sa-card sa-busy">
 # a second (A -> B -> A) keeps the larger value. Locally there is no parentIFrame and it does nothing.
 HEAD = """<script>
 (() => {
+  if (window.__saHead) return;  // the page can carry this script twice (in the HTML and added again by Gradio)
+  window.__saHead = true;
   const wrap = p => {
     if (!p || p.__saWrapped || typeof p.size !== 'function') return;
     const size = p.size.bind(p);
@@ -268,6 +270,28 @@ HEAD = """<script>
   const poll = setInterval(() => { wrap(window.parentIFrame); if (window.parentIFrame?.__saWrapped || ++tries > 150) clearInterval(poll); }, 100);
   // Inside the Space page's frame, show "Open full screen": the frame's address (with a private Space's signed
   // token) opened as its own page, where iOS Safari cannot stretch and shrink the frame.
+  // TEMPORARY (iPhone shake hunt): a corner readout of width, zoom, page height and resize events per second, so a
+  // screen recording shows which of them flips. Fixed position and outside the app, so it moves nothing itself.
+  const readout = () => {
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed;left:4px;top:4px;z-index:99999;pointer-events:none;font:11px/1.3 monospace;' +
+      'background:rgba(0,0,0,.75);color:#0f0;padding:3px 5px;border-radius:4px;white-space:pre';
+    document.body.appendChild(box);
+    let rz = 0, vrz = 0, sent = 0;
+    addEventListener('resize', () => rz++);
+    window.visualViewport && visualViewport.addEventListener('resize', () => vrz++);
+    const p = window.parentIFrame;
+    if (p && p.size) { const s = p.size; p.size = (...a) => { sent++; return s(...a); }; }
+    setInterval(() => {
+      const v = window.visualViewport, d = document.documentElement;
+      box.textContent = `${window.self !== window.top ? 'FRAME' : 'FULL'} w${innerWidth} cw${d.clientWidth} sw${d.scrollWidth}` +
+        `\\nzoom ${v ? v.scale.toFixed(2) : '?'} vw${v ? Math.round(v.width) : '?'} h${d.scrollHeight}` +
+        `\\nresize/s ${rz} vv/s ${vrz} size()/s ${sent}`;
+      rz = vrz = sent = 0;
+    }, 1000);
+  };
+  // Gradio may run this script after the page has loaded, so the load event can already be over
+  document.readyState === 'complete' ? readout() : window.addEventListener('load', readout);
   if (window.self !== window.top) {
     document.documentElement.classList.add('sa-framed');
     document.addEventListener('click', e => {
