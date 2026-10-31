@@ -32,6 +32,7 @@ from sa_asr.config import PROJECT_ROOT, load_languages, load_yaml, quiet_progres
 from sa_asr.data import build_eval_set, corpus_languages, eval_row_audio
 from sa_asr.hub import HubSync
 from sa_asr.inference import load_transcriber, resolve_model
+from sa_asr.rescore import lm_logprob, load_lm, sentence_case  # noqa: F401  (also imported from here by lm_tiebreak)
 from sa_asr.text import normalize_for_scoring
 
 log = logging.getLogger("lm_rescore")
@@ -41,42 +42,6 @@ LAMBDAS = [0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
 def resolve(path: str) -> Path:
     p = Path(path)
     return p if p.is_absolute() else PROJECT_ROOT / p
-
-
-def load_lm(model_id: str, device: str):
-    """MzansiLM needs hidden_size 512 with 9 attention heads (head_dim 56 set explicitly). Transformers
-    5 rejects that combination in its config check although the model is fine, so drop that one check."""
-    from transformers import AutoModelForCausalLM, AutoTokenizer, LlamaConfig
-
-    validators = getattr(LlamaConfig, "__class_validators__", None)
-    if validators is not None:
-        validators[:] = [v for v in validators if v.__name__ != "validate_architecture"]
-    tok = AutoTokenizer.from_pretrained(model_id)
-    tok.padding_side = "right"
-    lm = AutoModelForCausalLM.from_pretrained(model_id).to(device).eval()
-    return tok, lm
-
-
-@torch.inference_mode()
-def lm_logprob(tok, lm, texts: list[str], device: str, batch: int = 32) -> list[tuple[float, int]]:
-    """(total log-probability, number of scored tokens) of each text, including the end-of-text token."""
-    out: list[tuple[float, int]] = []
-    for i in range(0, len(texts), batch):
-        enc = tok(texts[i : i + batch], return_tensors="pt", padding=True).to(device)
-        logits = lm(input_ids=enc.input_ids, attention_mask=enc.attention_mask).logits[:, :-1].float()
-        target, mask = enc.input_ids[:, 1:], enc.attention_mask[:, 1:]
-        lp = torch.log_softmax(logits, dim=-1).gather(2, target.unsqueeze(-1)).squeeze(-1) * mask
-        out += list(zip(lp.sum(1).tolist(), mask.sum(1).tolist()))
-    return out
-
-
-def sentence_case(text: str) -> str:
-    """Capitalise the first letter and end with a full stop: the form MzansiLM saw in web text."""
-    t = text.strip()
-    if not t:
-        return t
-    t = t[0].upper() + t[1:]
-    return t if t[-1] in ".!?" else t + "."
 
 
 def word_errors(ref: str, hyp: str) -> int:

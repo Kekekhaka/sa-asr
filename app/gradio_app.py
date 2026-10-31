@@ -27,6 +27,7 @@ from sa_asr.audio import duration_seconds
 from sa_asr.config import load_languages
 from sa_asr.feedback import save_correction, summary, upload_correction
 from sa_asr.inference import load_audio, load_transcriber, resolve_model, transcribe_audio
+from sa_asr.rescore import LAMBDAS, MZANSILM, RescoringTranscriber, TextLM
 from sa_asr.routing import DSFSI_MODEL, MIN_SECONDS, load_second_model
 from sa_asr.textlid import DEFAULT_PATH as TEXT_LID_PATH, TextLID
 from sa_asr.translate import can_translate, translate_segments
@@ -43,8 +44,11 @@ MODEL_ID = os.environ.get("SA_ASR_MODEL", "KekeCode/sa-asr-whisper-lora-v4")
 FEEDBACK_REPO = os.environ.get("SA_ASR_FEEDBACK_REPO")
 # The second model costs ~3 GB and start-up time; set SA_ASR_SECOND=0 to leave it out.
 WITH_SECOND = os.environ.get("SA_ASR_SECOND", "1") != "0"
+# "Extra accuracy": MzansiLM picks among Whisper's 5 best (sa_asr.rescore); ~0.5 GB, SA_ASR_RESCORE=0 leaves it out.
+WITH_RESCORE = os.environ.get("SA_ASR_RESCORE", "1") != "0"
 GPU_SECONDS = 120          # the most one transcription may hold the GPU (counts against the daily ZeroGPU quota)
 MAX_MINUTES = 10           # longer recordings are refused, so a run fits in GPU_SECONDS
+RESCORE_MINUTES = 4        # rescoring takes 2-3x as long, so only recordings up to this length get it
 AUTO = "Detect automatically"
 
 registry = load_languages()
@@ -62,6 +66,7 @@ COLORS = {"eng": "#3B82F6", "afr": "#F97316", "zul": "#22C55E", "xho": "#A855F7"
 MODEL = load_transcriber(model_ref, trained_langs is not None)
 TEXT_LID = TextLID.load() if TEXT_LID_PATH.exists() else None
 SECOND = load_second_model() if WITH_SECOND else None
+RESCORER = RescoringTranscriber(MODEL, TextLM.load()) if WITH_RESCORE else None
 
 
 def fmt_time(seconds: float) -> str:
@@ -79,13 +84,14 @@ def chip(code: str | None, text: str | None = None) -> str:
 
 
 @gpu(duration=GPU_SECONDS)
-def run_model(wav: np.ndarray, lang_code: str | None, use_second: bool, beams: int) -> dict:
+def run_model(wav: np.ndarray, lang_code: str | None, use_second: bool, beams: int, rescore: bool = False) -> dict:
     MODEL.num_beams = beams
-    return transcribe_audio(MODEL, wav, registry, lang_code, mixed=lang_code is None, text_lid=TEXT_LID,
+    model = RESCORER if rescore and RESCORER is not None else MODEL
+    return transcribe_audio(model, wav, registry, lang_code, mixed=lang_code is None, text_lid=TEXT_LID,
                             second_model=SECOND if use_second else None)
 
 
-def summary_html(result: dict, shares: dict[str, float], chosen: bool) -> str:
+def summary_html(result: dict, shares: dict[str, float], chosen: bool, note: str = "") -> str:
     """Stat tiles, then a bar of the languages: share of speaking time if mixed, else detection confidence."""
     mixed = len(shares) > 1
     if mixed:
@@ -107,6 +113,8 @@ def summary_html(result: dict, shares: dict[str, float], chosen: bool) -> str:
     if result.get("rerouted"):
         out += (f'<div class="sa-note">{result["rerouted"]} clear part(s) were transcribed by the second model '
                 f"({html.escape(DSFSI_MODEL)}, MIT licence).</div>")
+    if note:
+        out += f'<div class="sa-note">{html.escape(note)}</div>'
     return out + "</div>"
 
 
@@ -124,7 +132,7 @@ def timeline_html(segs: list[dict], mixed: bool) -> str:
     return '<div class="sa-timeline">' + "".join(rows) + "</div>"
 
 
-def transcribe(uploaded, recorded, lang_name, use_second, beams):
+def transcribe(uploaded, recorded, lang_name, use_second, beams, extra=False):
     audio_path = recorded or uploaded
     if not audio_path:
         raise gr.Error("No audio yet. Upload a file, or record a voice message. If you recorded and the player "
@@ -138,7 +146,10 @@ def transcribe(uploaded, recorded, lang_name, use_second, beams):
     if seconds > MAX_MINUTES * 60:
         raise gr.Error(f"Recordings up to {MAX_MINUTES} minutes only (this one is {fmt_time(seconds)}).")
     chosen = lang_name != AUTO
-    result = run_model(wav, NAMES[lang_name] if chosen else None, use_second, int(beams))
+    rescore = bool(extra) and RESCORER is not None and seconds <= RESCORE_MINUTES * 60
+    note = (f"Extra accuracy is used for recordings up to {RESCORE_MINUTES} minutes; this one was transcribed normally."
+            if extra and RESCORER is not None and not rescore else "")
+    result = run_model(wav, NAMES[lang_name] if chosen else None, use_second, int(beams), rescore)
 
     shares = result.get("languages") or {}
     mixed = len(shares) > 1
@@ -151,7 +162,7 @@ def transcribe(uploaded, recorded, lang_name, use_second, beams):
     txt.write_text(result["text"], encoding="utf-8")
     state = {"wav": wav, "segments": segs, "language": result["language"], "text": result["text"]}
     heard = sorted({r[1] for r in rows})
-    return (gr.Column(visible=True), summary_html(result, shares, chosen),
+    return (gr.Column(visible=True), summary_html(result, shares, chosen, note),
             result["text"] or "(no speech recognised)", gr.DownloadButton(value=str(txt), visible=True),
             gr.Accordion(label=f"Timeline · {len(segs)} parts", open=mixed, visible=len(segs) > 1),
             timeline_html(segs, mixed), gr.Dataframe(value=rows, row_count=(len(rows), "fixed")),
@@ -468,6 +479,12 @@ with gr.Blocks(title="South African Speech-to-Text") as demo:
             info=f"For isiZulu, isiXhosa, Sesotho, Setswana, Xitsonga and Tshivenda: parts of a recording that are at "
                  f"least {MIN_SECONDS:.0f} s long and not telephone quality are transcribed again by {DSFSI_MODEL} "
                  "(MIT licence, trained on Swivuriso), about 5 points more accurate on such speech in our tests.")
+        extra = gr.Checkbox(
+            value=False, visible=RESCORER is not None, label="Extra accuracy (slower)",
+            info=f"Whisper writes its 5 best versions of each part and a South African language model ({MZANSILM}) "
+                 f"picks the most natural one: about 4% fewer word errors in our tests, 2-3x slower. Used for "
+                 f"{', '.join(registry[c].name.split(' (')[0] for c in LAMBDAS)}; recordings up to "
+                 f"{RESCORE_MINUTES} minutes.")
 
     gr.HTML(HERO)
 
@@ -527,7 +544,7 @@ with gr.Blocks(title="South African Speech-to-Text") as demo:
             "Swivuriso (CC BY 4.0, DSFSI, University of Pretoria). See the Space page for all credits.</div>")
 
     go.click(busy, None, [status, go, results], queue=False, show_progress="hidden").then(
-        transcribe, [uploaded, recorded, lang, second, beams],
+        transcribe, [uploaded, recorded, lang, second, beams, extra],
         [results, summary_box, transcript, download, seg_box, timeline, parts, heard, state, translation, saved],
         show_progress="hidden",
     ).then(idle, None, [status, go], js=DONE_JS, queue=False)
