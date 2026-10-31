@@ -83,6 +83,23 @@ def telephone_channel(wav: np.ndarray, rng: np.random.Generator, sr: int = SAMPL
     return soxr.resample(x, 8_000, sr).astype(np.float32)
 
 
+def packet_loss(wav: np.ndarray, rng: np.random.Generator, rate: tuple[float, float] = (0.01, 0.05),
+                frame_ms: int = 20, burst: tuple[int, int] = (1, 3), sr: int = SAMPLE_RATE) -> np.ndarray:
+    """Dropouts of a mobile or internet call: 20 ms frames go silent in bursts of 1-3 (20-60 ms gaps) until
+    1-5% of the audio is lost. Short enough that every word is still partly heard, so the transcript holds."""
+    frame = sr * frame_ms // 1000
+    n = len(wav) // frame
+    if n < 10:
+        return wav
+    out = wav.copy()
+    lost, target = 0, int(round(rng.uniform(*rate) * n))
+    while lost < target:
+        start, length = int(rng.integers(0, n)), int(rng.integers(burst[0], burst[1] + 1))
+        out[start * frame : (start + length) * frame] = 0.0
+        lost += length
+    return out
+
+
 def add_noise(wav: np.ndarray, rng: np.random.Generator, snr_db: tuple[float, float] = (10.0, 30.0)) -> np.ndarray:
     """White noise at a random SNR. A stand-in until a real noise corpus (e.g. MUSAN) is wired in."""
     power = float(np.mean(wav**2)) or 1e-8
@@ -135,8 +152,10 @@ def add_real_noise(wav: np.ndarray, rng: np.random.Generator, files: list[Path],
 
 
 def augment(wav: np.ndarray, rng: np.random.Generator, telephone_prob: float = 0.0, noise_prob: float = 0.0,
-            speed_prob: float = 0.0, reverb_prob: float = 0.0, noise_files_: list[Path] | None = None) -> np.ndarray:
-    """Speed, then room, then noise (real recordings when noise_files_ is given, else white), then phone line."""
+            speed_prob: float = 0.0, reverb_prob: float = 0.0, noise_files_: list[Path] | None = None,
+            packet_loss_prob: float = 0.0) -> np.ndarray:
+    """Speed, then room, then noise (real recordings when noise_files_ is given, else white), then phone line,
+    whose audio then loses packets with probability packet_loss_prob."""
     if speed_prob and rng.random() < speed_prob:
         wav = speed_perturb(wav, rng)
     if reverb_prob and rng.random() < reverb_prob:
@@ -145,4 +164,6 @@ def augment(wav: np.ndarray, rng: np.random.Generator, telephone_prob: float = 0
         wav = add_real_noise(wav, rng, noise_files_) if noise_files_ else add_noise(wav, rng)
     if telephone_prob and rng.random() < telephone_prob:
         wav = telephone_channel(wav, rng)
+        if packet_loss_prob and rng.random() < packet_loss_prob:
+            wav = packet_loss(wav, rng)
     return wav

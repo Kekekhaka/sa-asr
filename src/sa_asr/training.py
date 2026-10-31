@@ -67,6 +67,9 @@ def make_example_fn(
     speed_prob: float = 0.0,
     reverb_prob: float = 0.0,
     noise_dir: str | None = None,
+    lid_crop_prob: float = 0.0,
+    lid_crop_s: tuple[float, float] = (2.0, 5.0),
+    packet_loss_prob: float = 0.0,
 ):
     """Row in the common schema -> {input_features, labels, keep}.
 
@@ -74,6 +77,10 @@ def make_example_fn(
     so one model serves both phone calls and app/microphone recordings. Corpora that were
     recorded over the phone (Lwazi) are left alone. The augmentation is seeded per
     utterance, so a run is reproducible.
+
+    With probability lid_crop_prob a clip is cut to a random lid_crop_s-long piece and its label shrinks to the
+    language token alone (the transcript no longer matches the audio): the model practises naming the language
+    from the first few seconds, as the app's mixed-language mode needs, without learning a wrong transcript.
     """
     fe = processor.feature_extractor
     noises = noise_files(noise_dir) if noise_dir else None
@@ -87,11 +94,16 @@ def make_example_fn(
         keep = 0.3 <= dur <= max_duration_s and len(ids) > 4 and len(ids) <= max_label_tokens
         feats = None
         if keep:
+            rng = np.random.default_rng(zlib.crc32(f"{seed}:{ex['corpus']}:{ex['utt_id']}".encode()))
             if telephone_prob or noise_prob or speed_prob or reverb_prob:
-                rng = np.random.default_rng(zlib.crc32(f"{seed}:{ex['corpus']}:{ex['utt_id']}".encode()))
                 wideband = CORPORA[ex["corpus"]].channel != "telephone"
                 wav = augment(wav, rng, telephone_prob=telephone_prob if wideband else 0.0, noise_prob=noise_prob,
-                              speed_prob=speed_prob, reverb_prob=reverb_prob, noise_files_=noises)
+                              speed_prob=speed_prob, reverb_prob=reverb_prob, noise_files_=noises,
+                              packet_loss_prob=packet_loss_prob)
+            if lid_crop_prob and duration_seconds(wav) > lid_crop_s[0] + 1.0 and rng.random() < lid_crop_prob:
+                n = int(rng.uniform(*lid_crop_s) * SAMPLE_RATE)
+                start = int(rng.integers(0, max(len(wav) - n, 0) + 1))
+                wav, ids = wav[start : start + n], ids[:1]
             feats = fe(wav, sampling_rate=SAMPLE_RATE).input_features[0]
         return {"input_features": feats, "labels": ids, "keep": keep}
 
@@ -381,8 +393,11 @@ def lid_weighted_loss(logits: torch.Tensor, labels: torch.Tensor, lid_weight: fl
     """
     logits = logits.float()
     vocab = logits.shape[-1]
-    text = torch.nn.functional.cross_entropy(logits[:, 1:].reshape(-1, vocab), labels[:, 1:].reshape(-1),
-                                             ignore_index=-100)
+    if not (labels[:, 1:] != -100).any():  # only language-token crops in the batch: no transcript part (CE would be NaN)
+        text = logits.sum() * 0.0
+    else:
+        text = torch.nn.functional.cross_entropy(logits[:, 1:].reshape(-1, vocab), labels[:, 1:].reshape(-1),
+                                                 ignore_index=-100)
     lid = torch.nn.functional.cross_entropy(logits[:, 0], labels[:, 0], ignore_index=-100)
     return text + lid_weight * lid
 

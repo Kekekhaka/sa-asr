@@ -36,6 +36,20 @@ def test_real_noise_is_mixed_at_the_requested_snr(tmp_path):
     assert abs(snr - 10) < 0.5
 
 
+def test_packet_loss_silences_1_to_5_percent_in_whole_frames():
+    from sa_asr.audio import packet_loss
+
+    w = tone(10.0) + 0.5  # never zero on its own, so every zero sample is a dropped one
+    for seed in range(5):
+        out = packet_loss(w, np.random.default_rng(seed))
+        assert out.shape == w.shape and w.min() > 0  # the input is untouched
+        lost = np.mean(out == 0)
+        assert 0.005 < lost <= 0.08  # 1-5% of frames, plus a burst's overshoot and overlaps
+        frame = SR * 20 // 1000
+        zero = (out == 0).reshape(-1, frame)
+        assert np.all(zero.all(axis=1) | ~zero.any(axis=1))  # whole 20 ms frames, never part of one
+
+
 def test_augment_with_everything_off_returns_the_input():
     w = tone()
     assert augment(w, np.random.default_rng(0)) is w

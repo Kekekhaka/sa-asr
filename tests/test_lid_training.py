@@ -20,6 +20,50 @@ def test_lid_loss_is_not_diluted_by_transcript_length():
         assert torch.allclose(got, text_ce + 2.0 * lid_ce)  # the LID part is the same for both lengths
 
 
+def test_lid_loss_with_only_language_token_crops_is_finite():
+    logits = torch.randn(2, 4, 7, requires_grad=True)
+    labels = torch.tensor([[3, -100, -100, -100], [5, -100, -100, -100]])
+    got = lid_weighted_loss(logits, labels, 1.0)
+    assert torch.isfinite(got)
+    assert torch.allclose(got, torch.nn.functional.cross_entropy(logits[:, 0], labels[:, 0]))
+    got.backward()  # still trainable
+
+
+def test_lid_crop_keeps_only_the_language_token():
+    import numpy as np
+
+    from sa_asr.audio import SAMPLE_RATE
+    from sa_asr.training import make_example_fn
+
+    class Labels:
+        def __call__(self, text, lang):
+            return [99, 1, 2, 10, 11, 12, 13, 50257]
+
+    class FE:
+        def __call__(self, wav, sampling_rate):
+            return type("F", (), {"input_features": [np.asarray([len(wav)])]})()
+
+    proc = type("P", (), {"feature_extractor": FE()})()
+    wav = (np.sin(np.arange(10 * SAMPLE_RATE) / 20) * 0.1).astype(np.float32)
+    rows = [{"audio": wav, "text": "x", "lang": "zul", "corpus": "nchlt", "utt_id": str(i)} for i in range(40)]
+    import sa_asr.training as tr
+
+    orig = tr.decode_audio
+    tr.decode_audio = lambda a: a
+    try:
+        crop = make_example_fn(proc, Labels(), 30.0, 440, seed=1, lid_crop_prob=0.5, lid_crop_s=(2.0, 5.0))
+        plain = make_example_fn(proc, Labels(), 30.0, 440, seed=1)
+        out = [crop(r) for r in rows]
+        assert all(len(plain(r)["labels"]) == 8 for r in rows)
+    finally:
+        tr.decode_audio = orig
+    cropped = [o for o in out if len(o["labels"]) == 1]
+    assert 5 < len(cropped) < 35  # about half
+    assert all(o["labels"] == [99] for o in cropped)
+    assert all(2 * SAMPLE_RATE <= o["input_features"][0] <= 5 * SAMPLE_RATE for o in cropped)
+    assert all(o["input_features"][0] == 10 * SAMPLE_RATE for o in out if len(o["labels"]) == 8)
+
+
 def _tiny_processor():
     from transformers import WhisperProcessor
 

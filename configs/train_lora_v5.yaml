@@ -1,0 +1,89 @@
+# Round 5: round 4's data and augmentation, plus more natural speech and short clips for language detection.
+#   python scripts/train.py --config configs/train_lora_v5.yaml --hub-repo <user>/sa-asr-whisper-lora-v5 --resume
+# (on Kaggle: STAGE = "train_v5", run it twice: each session stops after ~11 h and the second resumes;
+#  attach the MUSAN dataset to the notebook, as for round 4)
+#
+# Why (2026-10-31), from round 4's tests:
+#  - natural speech is where the app is used, and dsfsi-anv still beats us on unscripted Sesotho, Setswana,
+#    Xitsonga and Tshivenda (12-15 vs 17-20 WER). Swivuriso's unscripted clips are already in its 6.0 stream,
+#    mixed with read prompts; swivuriso_unscripted adds them again on their own, so the model hears more of them.
+#  - language detection on the first 3 s is 74.5% (85.1% on whole clips), and the app's mixed-language mode decides
+#    on short windows. lid_crop_prob cuts 10% of clips to 2-5 s and trains only their language token.
+#  - phone calls (Lwazi) are still the worst sets (isiZulu 39, Tshivenda 40 WER). The simulated phone line now also
+#    drops packets (packet_loss_prob), as mobile and internet calls do.
+# (Common Voice Afrikaans was checked on 2026-10-31: 0.35 h from 18 speakers in v17, too little to add.)
+# Validation now also includes unscripted Swivuriso (32 clips per language), so the best checkpoint is picked with
+# natural speech in view; its eval_wer is therefore not comparable with round 4's.
+#
+# Judge it on: natural_v5 and lid_v5 against round 4 (unscripted Swivuriso 21.7 WER; LID 85.1% whole clip, 74.5% at
+# 3 s), and the held-out average (compare_v5, 25.8) must not get worse.
+
+base_model: openai/whisper-large-v3-turbo
+init_adapter: KekeCode/sa-asr-whisper-lora-v4   # round 4: LoRA weights and the trained language tokens
+output_dir: outputs/whisper-turbo-sa-lora-v5
+
+languages: all
+
+corpora:
+  nchlt: 0.75
+  swivuriso: 6.0
+  swivuriso_unscripted: 3.0
+  nchlt_eng: 1.0
+  lwazi: 1.0
+  fleurs: 1.0
+  openslr32: 0.5
+
+language_weights:
+  nso: 3.0
+  ssw: 3.5
+  afr: 2.5
+  eng: 4.0
+
+text: clean
+max_duration_s: 30
+max_label_tokens: 440
+shuffle_buffer: 64
+
+augment:
+  telephone_prob: 0.3
+  noise_prob: 0.15
+  speed_prob: 0.3
+  reverb_prob: 0.2
+  noise_dir: /kaggle/input/datasets/nhattruongdev/musan-noise/musan/noise
+  packet_loss_prob: 0.5   # half the simulated phone calls also drop 1-5% of their audio in 20-60 ms gaps
+  lid_crop_prob: 0.1      # 2-5 s pieces with only the language token as target (see make_example_fn)
+  lid_crop_s: [2.0, 5.0]
+
+lora:                 # r/alpha/targets come from the adapter being continued
+  enabled: true
+  train_language_tokens: true
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, out_proj, fc1, fc2]
+
+training:
+  max_steps: 2400     # two Kaggle sessions, as in rounds 3 and 4
+  lid_loss_weight: 1.0
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-5
+  warmup_steps: 100
+  lr_scheduler_type: linear
+  weight_decay: 0.0
+  gradient_checkpointing: true
+  eval_steps: 600
+  save_steps: 600
+  save_total_limit: 3
+  logging_steps: 10
+  dataloader_num_workers: 0
+  report_to: none
+  seed: 46            # a different data order from rounds 1-4
+  max_runtime_hours: 11.75
+  checkpoint_every_hours: 2.0
+  stall_timeout_minutes: 40
+
+validation:
+  cache_dir: data/eval_cache
+  max_samples_per_set: 32

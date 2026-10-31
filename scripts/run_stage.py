@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
 
 
 def gpu_settings() -> dict:
@@ -80,6 +80,10 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
         limit = f" --max-hours {max_hours}" if max_hours else ""
         return [(f"{py} scripts/train.py --config configs/train_lora_v4.yaml {s['batch']} "
                  f"--hub-repo {model_repo}-v4 --resume{limit}", {})]
+    if stage == "train_v5":  # round 5: more natural speech, short clips for language detection; continues from round 4
+        limit = f" --max-hours {max_hours}" if max_hours else ""
+        return [(f"{py} scripts/train.py --config configs/train_lora_v5.yaml {s['batch']} "
+                 f"--hub-repo {model_repo}-v5 --resume{limit}", {})]
     if stage == "compare_v2":
         cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
         cfg["models"].append({"name": "sa-turbo-lora", "type": "whisper", "model": model_repo, "language_mode": "proxy"})
@@ -108,7 +112,7 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
             yaml.safe_dump(cfg, f, sort_keys=False)
         return [(f"{py} scripts/evaluate.py --config configs/eval_natural.yaml --max-samples {s['eval_samples']} "
                  f"--sync-repo {results}", {})]
-    if stage in ("compare_v3", "natural_v3", "compare_v4", "natural_v4"):
+    if stage in ("compare_v3", "natural_v3", "compare_v4", "natural_v4", "compare_v5", "natural_v5"):
         # same tables as before, with the newest round's model added (the earlier models' results are cached)
         last = int(stage[-1])
         cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
@@ -123,10 +127,21 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
             yaml.safe_dump(cfg, f, sort_keys=False)
         return [(f"{py} scripts/evaluate.py --config configs/eval_compare.yaml --models sa-turbo-lora-v{last} "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
-    if stage in ("lid_v3", "lid_v4"):
+    if stage in ("lid_v3", "lid_v4", "lid_v5"):
         v = stage[-1]
         return [(f"{py} scripts/evaluate_lid.py --config configs/eval_baseline.yaml --model {model_repo}-v{v} "
                  f"--output-dir results/lid_v{v} --max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "lm_v4":  # MzansiLM on round 4: (1) rescoring the n-best, natural speech included; (2) tie-breaking
+        # sibling languages the detector hesitates between (needs lid_v4's predictions, which it pulls)
+        cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
+        cfg["eval_sets"]["swivuriso_unscripted"] = "all"
+        with open(PROJECT_ROOT / "configs/eval_lm.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+        return [(f"{py} scripts/lm_rescore.py --config configs/eval_lm.yaml --model {model_repo}-v4 "
+                 f"--output-dir results/lm_rescore_v4 --max-samples {s['eval_samples']} --sync-repo {results}", {}),
+                (f"{py} scripts/lm_tiebreak.py --config configs/eval_baseline.yaml --model {model_repo}-v4 "
+                 f"--lid results/lid_v4/predictions.jsonl --output-dir results/lm_tiebreak_v4 "
+                 f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
     if stage == "text_lid":  # no GPU needed: bigger spelling model from training transcripts, tested on unseen test clips
         preds = "results/baseline/predictions/sa-turbo-lora-v2"
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {}),
