@@ -242,7 +242,41 @@ BUSY = """<div class="sa-card sa-busy">
   <div class="sa-elapsed"></div>
   <div class="sa-progress"><i></i></div>
 </div>"""
-DONE_JS = "() => { document.getElementById('sa-results')?.scrollIntoView({behavior: 'smooth', block: 'start'}); }"
+# On the Space page the app sits in an iframe that Gradio sizes through iframe-resizer (window.parentIFrame.size),
+# with fractional heights measured partly from the iframe's own height. On iPhones that can feed back and the page
+# shakes non-stop. This wraps size(): whole pixels, changes under 4 px dropped, and a height that bounces back within
+# a second (A -> B -> A) keeps the larger value. Locally there is no parentIFrame and it does nothing.
+HEAD = """<script>
+(() => {
+  const wrap = p => {
+    if (!p || p.__saWrapped || typeof p.size !== 'function') return;
+    const size = p.size.bind(p);
+    let last = 0, prev = 0, changed = 0;
+    p.size = (h, w) => {
+      if (h == null) return size(h, w);
+      h = Math.ceil(h);
+      if (Math.abs(h - last) < 4) return;
+      const now = Date.now();
+      if (Math.abs(h - prev) < 4 && now - changed < 1000) h = Math.max(h, last);
+      if (h === last) return;
+      prev = last; last = h; changed = now;
+      return size(h, w);
+    };
+    p.__saWrapped = true;
+  };
+  let tries = 0;
+  const poll = setInterval(() => { wrap(window.parentIFrame); if (window.parentIFrame?.__saWrapped || ++tries > 150) clearInterval(poll); }, 100);
+  // Inside the Space page's frame, show "Open full screen": the frame's address (with a private Space's signed
+  // token) opened as its own page, where iOS Safari cannot stretch and shrink the frame.
+  if (window.self !== window.top) {
+    document.documentElement.classList.add('sa-framed');
+    document.addEventListener('click', e => {
+      if (e.target.closest && e.target.closest('.sa-full')) { e.preventDefault(); window.open(location.href, '_blank'); }
+    });
+  }
+})();
+</script>"""
+DONE_JS ="() => { document.getElementById('sa-results')?.scrollIntoView({behavior: 'smooth', block: 'start'}); }"
 
 
 def busy():
@@ -261,6 +295,7 @@ def step(n: int, title: str, hint: str = "") -> gr.HTML:
 HERO = (
     '<div class="sa-hero"><div class="sa-flag"></div>'
     '<div class="sa-badge">🇿🇦 11 official languages · code-switching aware</div>'
+    '<div><a class="sa-full" href="#">⤢ Open full screen</a></div>'
     "<h1>Speak any South African language.<br><span>Get the words back.</span></h1>"
     "<p>Record a voice note or upload audio. Every part is transcribed in its own language, and you can "
     "translate it to English.</p>"
@@ -285,6 +320,13 @@ CSS = """
 .gradio-container { max-width: 720px !important; margin: 0 auto !important; padding: 0 16px 48px !important;
   background: radial-gradient(900px 420px at 50% -120px, rgba(255, 75, 75, .16), transparent 70%) !important; }
 .gradio-container .prose, .gradio-container .html-container { overflow: visible !important; }
+/* iOS Safari widens an iframe to its content and enlarges text on its own; either one made the Space page's frame
+   flip between two widths. Nothing may stick out sideways, and text keeps its size. */
+html, body { overflow-x: hidden !important; max-width: 100%; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+.gradio-container, .gradio-container * { min-width: 0; }
+.sa-full { display: none; margin-top: 10px; padding: 6px 14px; border-radius: 999px; font-size: .82rem; font-weight: 600;
+  color: var(--sa-accent) !important; text-decoration: none !important; border: 1px solid var(--sa-accent); }
+.sa-framed .sa-full { display: inline-block !important; }  /* Gradio also adds a stronger, prefixed copy of each rule */
 footer { display: none !important; }
 
 /* hero */
@@ -477,4 +519,4 @@ with gr.Blocks(title="South African Speech-to-Text") as demo:
 
 if __name__ == "__main__":
     # Server-side rendering (Gradio's Node proxy) can leave a private Space's page unstyled; plain serving works.
-    demo.launch(ssr_mode=False, theme=THEME, css=CSS, footer_links=[])
+    demo.launch(ssr_mode=False, theme=THEME, css=CSS, head=HEAD, footer_links=[])
