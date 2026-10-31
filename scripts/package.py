@@ -70,7 +70,12 @@ def main():
         api.create_repo(args.repo, repo_type="dataset", private=True, exist_ok=True)
         local = {p.relative_to(PROJECT_ROOT).as_posix(): p for p in files}
         remote = set(api.list_repo_files(args.repo, repo_type="dataset")) - {".gitattributes"}
-        ops = [CommitOperationAdd(path_in_repo=r, path_or_fileobj=str(p)) for r, p in local.items()]
+        ops = [CommitOperationAdd(path_in_repo=r, path_or_fileobj=str(p)) for r, p in local.items() if r != ".gitignore"]
+        # The Hub skips files the committed .gitignore ignores, and ours ignores BUILD.txt (for git): upload a copy
+        # without that line, or the notebook never sees the build.
+        gitignore = "".join(line for line in (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
+                            .splitlines(keepends=True) if line.strip() != "BUILD.txt")
+        ops.append(CommitOperationAdd(path_in_repo=".gitignore", path_or_fileobj=gitignore.encode()))
         ops.append(CommitOperationAdd(path_in_repo="BUILD.txt", path_or_fileobj=(build + "\n").encode()))
         local["BUILD.txt"] = None
         ops += [CommitOperationDelete(path_in_repo=r) for r in remote - set(local)]
