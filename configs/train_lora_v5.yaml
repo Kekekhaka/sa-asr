@@ -11,8 +11,12 @@
 #    on short windows. lid_crop_prob cuts 10% of clips to 2-5 s and trains only their language token.
 #  - phone calls (Lwazi) are still the worst sets (isiZulu 39, Tshivenda 40 WER). The simulated phone line now also
 #    drops packets (packet_loss_prob), as mobile and internet calls do.
+#  - SADiLaR corpora (2026-11-01): soap-opera speech and Sepedi-English prompts are the only code-switched training
+#    data we have, SAMA adds radio news and drama in six languages (including Tshivenda and Sepedi), AST adds more
+#    telephone speech. The soap opera's official dev/test lists are held out, so its test split stays unseen.
 # (Common Voice Afrikaans was checked on 2026-10-31: 0.35 h from 18 speakers in v17, too little to add.)
-# Validation now also includes unscripted Swivuriso (32 clips per language), so the best checkpoint is picked with
+# Validation now also includes the SADiLaR validation splits (21 more sets of 32 clips, so each evaluation takes a few
+# minutes longer) and unscripted Swivuriso (32 clips per language), so the best checkpoint is picked with
 # natural speech in view; its eval_wer is therefore not comparable with round 4's.
 #
 # Judge it on: natural_v5 and lid_v5 against round 4 (unscripted Swivuriso 21.7 WER; LID 85.1% whole clip, 74.5% at
@@ -32,12 +36,22 @@ corpora:
   lwazi: 1.0
   fleurs: 1.0
   openslr32: 0.5
+  # SADiLaR (private dataset KekeCode/sa-asr-sadilar). A weight is per (corpus, language) stream and the streams
+  # are mixed by weight, not by hours, so these are shares of draws: soap (27 h, 5 streams) and SPCS (10 h, one
+  # stream) are rare, spontaneous and code-switched, so they are drawn well above their size; SAMA (120 h of radio
+  # news and drama, 6 streams) is plentiful and gets an ordinary weight; AST (57 h) is telephone prompts (names,
+  # numbers, addresses) and Multipron (8 h) is read names, so both stay small.
+  soap: 3.0
+  spcs: 3.0
+  sama: 1.0
+  ast: 0.4
+  multipron: 0.3
 
 language_weights:
   nso: 3.0
   ssw: 3.5
   afr: 2.5
-  eng: 4.0
+  eng: 2.0            # was 4.0: English now has soap, AST and Multipron streams on top of nchlt_eng
 
 text: clean
 max_duration_s: 30
