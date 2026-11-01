@@ -36,7 +36,8 @@ import numpy as np
 import soundfile as sf
 
 import sa_asr  # noqa: F401  (corporate-certificate fix before any download)
-from sa_asr.sadilar import clean_ast, clean_sama, decode_alaw, soap_label, split_of, textgrid_utterances
+from sa_asr.sadilar import (clean_ast, clean_sama, decode_alaw, lab_utterances, soap_label, split_of,
+                            textgrid_utterances)
 
 log = logging.getLogger("convert_sadilar")
 API = "https://repo.sadilar.org/server/api/core"
@@ -299,6 +300,26 @@ def convert_soap(work: Path, w: Writer) -> None:
     log.info("soap: %d utterances skipped (two Bantu languages mixed, no audio or no text)", skipped)
 
 
+def by_stem(names: list[str], ext: str) -> dict[str, list[str]]:
+    """Lower-case stem -> every member with that extension (case ignored). Some AST corpora reuse file names in
+    different speaker folders, so a stem can have several."""
+    out: dict[str, list[str]] = {}
+    for n in names:
+        if n.lower().endswith(ext):
+            out.setdefault(PurePosixPath(n).stem.lower(), []).append(n)
+    return out
+
+
+def nearest(audio: str, candidates: list[str]) -> str | None:
+    """The candidate sharing the most folder names with the audio file; None if there is none or it is a tie."""
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    dirs = {d.lower() for d in PurePosixPath(audio).parent.parts}
+    scored = sorted(((len(dirs & {d.lower() for d in PurePosixPath(c).parent.parts}), c) for c in candidates),
+                    reverse=True)
+    return scored[0][1] if scored[0][0] > scored[1][0] else None
+
+
 def convert_ast(work: Path, w: Writer) -> None:
     for uuid in ITEMS["ast"]:
         try:
@@ -317,29 +338,46 @@ def convert_ast(work: Path, w: Writer) -> None:
             if lang is None:
                 log.warning("AST %s: language not recognised; skipped", accent)
                 continue
-            grids = {PurePosixPath(n).stem.lower(): n for n in names if n.lower().endswith(".textgrid")}
+            grids, labs = by_stem(names, ".textgrid"), by_stem(names, ".lab")
             alaws = [n for n in names if n.lower().endswith(".alaw")]
-            kept = 0
+            kept = ambiguous = from_lab = 0
+            reused = {s for s, k in Counter(PurePosixPath(n).stem.lower() for n in alaws).items() if k > 1}
             for n in alaws:
                 stem = PurePosixPath(n).stem  # BE000CF001: database, speaker, call, utterance
-                grid = grids.get(stem.lower())
-                if grid is None:
-                    continue
+                # a reused name (001.alaw in each speaker folder): the folder is the speaker
+                folder = PurePosixPath(n).parent.name if stem.lower() in reused else None
+                uid, speaker = (f"{folder}_{stem}", folder) if folder else (stem, stem[:7])
+                src = nearest(n, grids.get(stem.lower(), []))
+                if src is not None:
+                    utts = textgrid_utterances(text_of(z.read(src)))
+                else:
+                    src = nearest(n, labs.get(stem.lower(), []))
+                    if src is None:
+                        ambiguous += len(grids.get(stem.lower(), [])) > 1 or len(labs.get(stem.lower(), [])) > 1
+                        continue
+                    utts = lab_utterances(text_of(z.read(src)))
+                    from_lab += 1
                 wav = None
-                for i, (a, b, raw) in enumerate(textgrid_utterances(text_of(z.read(grid)))):
+                for i, (a, b, raw) in enumerate(utts):
                     text = clean_ast(raw)
                     if text is None:
                         continue
                     wav = decode_alaw(z.read(n)) if wav is None else wav
-                    clip = wav[max(int((a - 0.15) * SR), 0) : int((b + 0.15) * SR)]
-                    speaker = stem[:7]
-                    w.add(f"ast_{lang}", split_of(f"ast:{speaker}"), f"{stem}_{i}", speaker, text, lang, clip,
+                    clip = wav if b is None else wav[max(int((a - 0.15) * SR), 0) : int((b + 0.15) * SR)]
+                    w.add(f"ast_{lang}", split_of(f"ast:{accent}:{speaker}"), f"{uid}_{i}", speaker, text, lang, clip,
                           info=accent.removeprefix("AST ").strip())
                     kept += 1
-            log.info("AST %s: %d utterances (%d audio files, %d TextGrids)", accent, kept, len(alaws), len(grids))
-            if not kept:  # show the layout, to fix the reader
-                log.warning("AST %s: file types %s; members %s", accent,
-                            Counter(PurePosixPath(n).suffix.lower() for n in names).most_common(8), names[:8])
+            log.info("AST %s: %d utterances (%d audio files, %d TextGrids, %d .lab files, %d audio files read from "
+                     ".lab, %d skipped as ambiguous)", accent, kept, len(alaws),
+                     sum(map(len, grids.values())), sum(map(len, labs.values())), from_lab, ambiguous)
+            if from_lab or not kept:  # show the layout and sample transcriptions, to check or fix the reader
+                samples = {}
+                for n in names:
+                    ext = PurePosixPath(n).suffix.lower()
+                    if ext in (".lab", ".t02", ".textgrid") and ext not in samples:
+                        samples[ext] = (n, text_of(z.read(n))[:300])
+                log.warning("AST %s: file types %s; members %s; samples %s", accent,
+                            Counter(PurePosixPath(n).suffix.lower() for n in names).most_common(8), names[:8], samples)
             z.close()
             (work / bit["name"]).unlink()
 

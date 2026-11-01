@@ -86,6 +86,10 @@ def textgrid_utterances(textgrid: str) -> list[tuple[float, float, str]]:
     first = re.split(r'item \[2\]:', textgrid)[0]
     intervals = [(float(a), float(b), t) for a, b, t in
                  re.findall(r'xmin = ([\d.]+)\s+xmax = ([\d.]+)\s+text = "((?:[^"]|"")*)"', first)]
+    return _group_utterances(intervals)
+
+
+def _group_utterances(intervals: list[tuple[float, float, str]]) -> list[tuple[float, float, str]]:
     out, cur = [], None
     for a, b, t in intervals:
         if "(u)" in t and cur is None:
@@ -96,6 +100,40 @@ def textgrid_utterances(textgrid: str) -> list[tuple[float, float, str]]:
             out.append(tuple(cur))
             cur = None
     return out
+
+
+_NUM = re.compile(r"^-?\d+(\.\d+)?$")
+
+
+def lab_utterances(lab: str) -> list[tuple[float, float | None, str]]:
+    """(start, end, raw text) from an AST .lab file. Handles HTK labels ("start end word", 100 ns units when the
+    numbers are whole and large), xwaves labels (a header ending in "#", then "end colour word") and plain
+    orthographic text (one utterance over the whole file, end None). Labelled files with (u)...(/u) markup are
+    grouped like a TextGrid; without it the whole label sequence is one utterance."""
+    lines = [ln.strip() for ln in lab.splitlines() if ln.strip()]
+    if "#" in lines:  # xwaves
+        rows, prev = [], 0.0
+        for ln in lines[lines.index("#") + 1:]:
+            p = ln.split(None, 2)
+            if len(p) == 3 and _NUM.match(p[0]):
+                rows.append((prev, float(p[0]), p[2]))
+                prev = float(p[0])
+    else:
+        rows = []
+        for ln in lines:
+            p = ln.split(None, 2)
+            if len(p) == 3 and _NUM.match(p[0]) and _NUM.match(p[1]):
+                rows.append((float(p[0]), float(p[1]), p[2]))
+        if rows and len(rows) == len(lines):
+            if all("." not in ln.split()[1] for ln in lines) and max(b for _, b, _ in rows) > 10_000:
+                rows = [(a / 1e7, b / 1e7, t) for a, b, t in rows]
+        else:  # plain text
+            return [(0.0, None, " ".join(lines))] if lines else []
+    if not rows:
+        return []
+    if any("(u)" in t for _, _, t in rows):
+        return _group_utterances(rows)
+    return [(rows[0][0], rows[-1][1], " ".join(t for _, _, t in rows))]
 
 
 def soap_label(langs: list[str]) -> str | None:
