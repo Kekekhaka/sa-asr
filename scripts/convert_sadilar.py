@@ -201,17 +201,22 @@ class Writer:
 # ---------------------------------------------------------------------------------------------------------------
 
 
+def speaker_splits(speakers: set[str], key: str) -> dict[str, str]:
+    """speaker -> split for a corpus with few speakers, where a hash split can leave test or validation empty (SPCS and
+    Multipron did): whole speakers ranked by hash, about 7% each for test and validation, at least one speaker each
+    (fewer when there are under four, so train is never empty)."""
+    ranked = sorted(speakers, key=lambda s: zlib.crc32(f"{key}:{s}".encode()))
+    n_hold = min(max(1, round(0.07 * len(ranked))), (len(ranked) - 1) // 2)
+    log.info("%s: %d speakers, %d held out for test and %d for validation", key, len(ranked), n_hold, n_hold)
+    return {s: "test" if i < n_hold else "validation" if i < 2 * n_hold else "train" for i, s in enumerate(ranked)}
+
+
 def convert_spcs(work: Path, w: Writer) -> None:
     arc = download(item_files(ITEMS["spcs"][0])[0], work)
     with tarfile.open(arc, "r:gz") as t:
         files = {m.name.split("SPCS/", 1)[-1]: t.extractfile(m).read() for m in t if m.isfile()}
     clean = files["lists/CLEAN.trans.lst"].decode("utf-8", "replace").split()
-    # SPCS has few speakers, so a hash split can leave test or validation empty (it did): hold out whole speakers
-    # by hash rank instead, about 7% each and at least one speaker each.
-    speakers = sorted({rel.split("/")[0] for rel in clean}, key=lambda s: zlib.crc32(f"spcs:{s}".encode()))
-    n_hold = max(1, round(0.07 * len(speakers)))
-    split = {s: "test" if i < n_hold else "validation" if i < 2 * n_hold else "train" for i, s in enumerate(speakers)}
-    log.info("spcs: %d speakers, %d held out for test and %d for validation", len(speakers), n_hold, n_hold)
+    split = speaker_splits({rel.split("/")[0] for rel in clean}, "spcs")
     for rel in clean:  # 001/001_Female_23_100.txt
         txt, wav = files.get(f"transcriptions/{rel}"), files.get(f"audio/{rel[:-4]}.wav")
         if txt is None or wav is None:
@@ -267,16 +272,21 @@ def convert_sama(work: Path, w: Writer) -> None:
 def convert_multipron(work: Path, w: Writer) -> None:
     z = zipfile.ZipFile(download(item_files(ITEMS["multipron"][0])[0], work))
     names = set(z.namelist())
-    for n in sorted(names):
+    clips = [n for n in sorted(names) if len(PurePosixPath(n).parts) >= 6 and PurePosixPath(n).parts[0] == "data"
+             and PurePosixPath(n).parts[4] == "audio" and n.endswith(".wav")
+             and MULTIPRON_LANGS.get(PurePosixPath(n).parts[2])]
+    split = {}  # per language: a few speakers each, so whole speakers are held out (see speaker_splits)
+    for lang in sorted({MULTIPRON_LANGS[PurePosixPath(n).parts[2]] for n in clips}):
+        speakers = {PurePosixPath(n).parts[3] for n in clips if MULTIPRON_LANGS[PurePosixPath(n).parts[2]] == lang}
+        split[lang] = speaker_splits(speakers, f"multipron_{lang}")
+    for n in clips:
         parts = PurePosixPath(n).parts  # data/list_A/afrikaans/<speaker>/audio/<id>.wav
-        if len(parts) < 6 or parts[0] != "data" or parts[4] != "audio" or not n.endswith(".wav"):
-            continue
-        lang, speaker = MULTIPRON_LANGS.get(parts[2]), parts[3]
+        lang, speaker = MULTIPRON_LANGS[parts[2]], parts[3]
         txt = f"data/{parts[1]}/{parts[2]}/{speaker}/transcription/{PurePosixPath(n).stem}.txt"
-        if lang is None or txt not in names:
+        if txt not in names:
             continue
         text = " ".join(z.read(txt).decode("utf-8", "replace").split())
-        w.add(f"multipron_{lang}", split_of(f"multipron:{speaker}"), PurePosixPath(n).stem, speaker, text, lang,
+        w.add(f"multipron_{lang}", split[lang][speaker], PurePosixPath(n).stem, speaker, text, lang,
               read_wav(z.read(n)), info="names")
 
 

@@ -159,8 +159,8 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
                  f"--sync-repo {results}", {})]
     if stage == "sadilar_data":  # CPU only: SADiLaR corpora -> private dataset in the training layout (resumable)
         return [(f"{py} scripts/convert_sadilar.py --repo {user}/sa-asr-sadilar", {})]
-    if stage == "sadilar_fix":  # CPU only: SPCS converted again, now with whole speakers held out for test and validation (it had only train)
-        return [(f"{py} scripts/convert_sadilar.py --repo {user}/sa-asr-sadilar --only spcs --redo", {})]
+    if stage == "sadilar_fix":  # CPU only: Multipron converted again, with whole speakers held out for test and validation (it had only train; SPCS was redone the same way)
+        return [(f"{py} scripts/convert_sadilar.py --repo {user}/sa-asr-sadilar --only multipron --redo", {})]
     if stage == "text_lid":  # no GPU needed: bigger spelling model from training transcripts, tested on unseen test clips
         preds = "results/baseline/predictions/sa-turbo-lora-v2"
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {}),
