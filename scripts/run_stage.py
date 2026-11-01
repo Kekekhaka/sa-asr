@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "sadilar_inspect", "sadilar_data", "sadilar_v4", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "sadilar_inspect", "sadilar_data", "sadilar_fix", "sadilar_v4", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
 
 
 def gpu_settings() -> dict:
@@ -159,6 +159,8 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
                  f"--sync-repo {results}", {})]
     if stage == "sadilar_data":  # CPU only: SADiLaR corpora -> private dataset in the training layout (resumable)
         return [(f"{py} scripts/convert_sadilar.py --repo {user}/sa-asr-sadilar", {})]
+    if stage == "sadilar_fix":  # CPU only: SAMA and AST converted again with the fixed readers, replacing their folders
+        return [(f"{py} scripts/convert_sadilar.py --repo {user}/sa-asr-sadilar --only sama ast --redo", {})]
     if stage == "text_lid":  # no GPU needed: bigger spelling model from training transcripts, tested on unseen test clips
         preds = "results/baseline/predictions/sa-turbo-lora-v2"
         return [(f"{py} scripts/hub_sync.py pull results/baseline --repo {results}", {}),

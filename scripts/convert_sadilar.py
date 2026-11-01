@@ -3,6 +3,7 @@ Kaggle stage sadilar_data, Accelerator: None).
 
     python scripts/convert_sadilar.py --repo <user>/sa-asr-sadilar
     python scripts/convert_sadilar.py --repo <user>/sa-asr-sadilar --only spcs soap
+    python scripts/convert_sadilar.py --repo <user>/sa-asr-sadilar --only sama ast --redo   # replace those corpora
 
 One config per corpus and language (spcs_nso, sama_afr, soap_zul, ast_eng, ...), each with train/validation/test
 Parquet files: audio (16 kHz FLAC bytes), utt_id, speaker, text, lang, duration, and info (genre, accent or the
@@ -113,6 +114,24 @@ def flac(wav: np.ndarray) -> bytes:
     return buf.getvalue()
 
 
+AUDIO_EXT = (".wav", ".flac", ".mp3", ".ogg")
+
+
+def text_of(data: bytes) -> str:
+    """Text file bytes -> str, for the UTF-16 files Praat writes as well as UTF-8."""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16")
+    if len(data) > 1 and data[1:2] == b"\x00":  # UTF-16 LE without a byte-order mark
+        return data.decode("utf-16-le", "replace")
+    return data.decode("utf-8-sig", "replace")
+
+
+def key_of(name: str) -> str:
+    """Archive member or CSV filename -> matching key: lowercase base name without the audio extension."""
+    base = PurePosixPath(name.replace("\\", "/").strip()).name.lower()
+    return base.rsplit(".", 1)[0] if base.endswith(AUDIO_EXT) else base
+
+
 BAD_AUDIO = [0]  # files neither soundfile nor ffmpeg could decode (skipped, counted)
 
 
@@ -208,19 +227,29 @@ def convert_sama(work: Path, w: Writer) -> None:
                     shutil.copyfileobj(src, tmp, 1 << 22)
             inner = zipfile.ZipFile(tmp.name)
             names = inner.namelist()
-            audio = {PurePosixPath(n).name: n for n in names if n.endswith(".wav")}
-            kept = dropped = 0
-            for csv_name in [n for n in names if n.endswith(".csv") and "/info/" in n]:
-                for row in csv.DictReader(io.TextIOWrapper(inner.open(csv_name), "utf-8")):
-                    text, path = clean_sama(row["transcription"]), audio.get(row["filename"])
-                    if text is None or path is None:
-                        dropped += 1
+            audio = {key_of(n): n for n in names if n.lower().endswith(AUDIO_EXT)}
+            kept, unclear, missing = 0, 0, []
+            csvs = [n for n in names if n.lower().endswith(".csv") and "/info/" in n.lower()]
+            for csv_name in csvs:
+                rows = csv.DictReader(io.StringIO(text_of(inner.read(csv_name))))
+                for row in rows:
+                    row = {k.strip().lower(): (v or "") for k, v in row.items() if k}
+                    text, path = clean_sama(row.get("transcription", "")), audio.get(key_of(row.get("filename", "")))
+                    if path is None:
+                        missing.append(row.get("filename", ""))
                         continue
-                    episode = row["filename"].rsplit("_", 1)[0]  # sama_nso_p00118
+                    if text is None:
+                        unclear += 1
+                        continue
+                    episode = PurePosixPath(path).stem.rsplit("_", 1)[0]  # sama_nso_p00118
                     w.add(f"sama_{lang}", split_of(f"{genre}:{episode}"), PurePosixPath(path).stem,
                           f"{genre}_{episode}", text, lang, read_wav(inner.read(path)), info=genre)
                     kept += 1
-            log.info("sama %s %s: %d clips kept, %d dropped (unclear speech or no audio)", lang, genre, kept, dropped)
+            log.info("sama %s %s: %d clips kept, %d unclear speech, %d with no audio (%d csv, %d audio files)",
+                     lang, genre, kept, unclear, len(missing), len(csvs), len(audio))
+            if not kept:  # show what did not match, to fix the reader
+                log.warning("sama %s %s: csv names %s; audio %s; members %s", lang, genre, missing[:3],
+                            list(audio.values())[:3], names[:8])
             inner.close()
             Path(tmp.name).unlink()
         outer.close()
@@ -288,17 +317,16 @@ def convert_ast(work: Path, w: Writer) -> None:
             if lang is None:
                 log.warning("AST %s: language not recognised; skipped", accent)
                 continue
-            grids = {PurePosixPath(n).stem: n for n in names if n.lower().endswith(".textgrid")}
+            grids = {PurePosixPath(n).stem.lower(): n for n in names if n.lower().endswith(".textgrid")}
+            alaws = [n for n in names if n.lower().endswith(".alaw")]
             kept = 0
-            for n in names:
-                if not n.endswith(".alaw"):
-                    continue
+            for n in alaws:
                 stem = PurePosixPath(n).stem  # BE000CF001: database, speaker, call, utterance
-                grid = grids.get(stem)
+                grid = grids.get(stem.lower())
                 if grid is None:
                     continue
                 wav = None
-                for i, (a, b, raw) in enumerate(textgrid_utterances(z.read(grid).decode("utf-8", "replace"))):
+                for i, (a, b, raw) in enumerate(textgrid_utterances(text_of(z.read(grid)))):
                     text = clean_ast(raw)
                     if text is None:
                         continue
@@ -308,7 +336,10 @@ def convert_ast(work: Path, w: Writer) -> None:
                     w.add(f"ast_{lang}", split_of(f"ast:{speaker}"), f"{stem}_{i}", speaker, text, lang, clip,
                           info=accent.removeprefix("AST ").strip())
                     kept += 1
-            log.info("AST %s: %d utterances", accent, kept)
+            log.info("AST %s: %d utterances (%d audio files, %d TextGrids)", accent, kept, len(alaws), len(grids))
+            if not kept:  # show the layout, to fix the reader
+                log.warning("AST %s: file types %s; members %s", accent,
+                            Counter(PurePosixPath(n).suffix.lower() for n in names).most_common(8), names[:8])
             z.close()
             (work / bit["name"]).unlink()
 
@@ -337,6 +368,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--repo", required=True, help="private HF dataset to write, e.g. <user>/sa-asr-sadilar")
     ap.add_argument("--only", nargs="+", choices=list(CONVERTERS))
+    ap.add_argument("--redo", action="store_true",
+                    help="convert the --only corpora again, replacing their folders in the repo (one commit, and "
+                         "only when the new conversion wrote something)")
     ap.add_argument("--work", default="/tmp/sadilar")
     args = ap.parse_args()
     from huggingface_hub import HfApi
@@ -347,7 +381,7 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
     for name in args.only or CONVERTERS:
         done = {f.split("/")[0] for f in api.list_repo_files(args.repo, repo_type="dataset")}
-        if any(c.startswith(f"{name}_") for c in done):
+        if any(c.startswith(f"{name}_") for c in done) and not (args.redo and args.only):
             log.info("%s: already in %s; skipped (delete its folders there to convert again)", name, args.repo)
             continue
         out = work / f"out_{name}"
@@ -359,8 +393,12 @@ def main() -> None:
             BAD_AUDIO[0] = 0
         for c in configs:
             log.info("%s: %s", c, ", ".join(f"{s} {h:.1f} h" for s, h in sorted(w.stats[c].items())))
+        if not configs:
+            log.warning("%s: nothing converted; repo left as it was", name)
+            continue
         api.upload_folder(repo_id=args.repo, repo_type="dataset", folder_path=str(out),
-                          commit_message=f"{name}: {', '.join(configs)}")
+                          commit_message=f"{name}: {', '.join(configs)}",
+                          delete_patterns=[f"{name}_*/*"] if args.redo else None)
         shutil.rmtree(out, ignore_errors=True)
     files = api.list_repo_files(args.repo, repo_type="dataset")
     configs = sorted({f.split("/")[0] for f in files if f.endswith(".parquet")})
