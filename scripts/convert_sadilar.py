@@ -29,6 +29,7 @@ import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from collections import Counter, defaultdict
 from pathlib import Path, PurePosixPath
 
@@ -205,13 +206,19 @@ def convert_spcs(work: Path, w: Writer) -> None:
     with tarfile.open(arc, "r:gz") as t:
         files = {m.name.split("SPCS/", 1)[-1]: t.extractfile(m).read() for m in t if m.isfile()}
     clean = files["lists/CLEAN.trans.lst"].decode("utf-8", "replace").split()
+    # SPCS has few speakers, so a hash split can leave test or validation empty (it did): hold out whole speakers
+    # by hash rank instead, about 7% each and at least one speaker each.
+    speakers = sorted({rel.split("/")[0] for rel in clean}, key=lambda s: zlib.crc32(f"spcs:{s}".encode()))
+    n_hold = max(1, round(0.07 * len(speakers)))
+    split = {s: "test" if i < n_hold else "validation" if i < 2 * n_hold else "train" for i, s in enumerate(speakers)}
+    log.info("spcs: %d speakers, %d held out for test and %d for validation", len(speakers), n_hold, n_hold)
     for rel in clean:  # 001/001_Female_23_100.txt
         txt, wav = files.get(f"transcriptions/{rel}"), files.get(f"audio/{rel[:-4]}.wav")
         if txt is None or wav is None:
             continue
         speaker = rel.split("/")[0]
         text = " ".join(txt.decode("utf-8", "replace").split())
-        w.add("spcs_nso", split_of(f"spcs:{speaker}"), PurePosixPath(rel).stem, speaker, text, "nso", read_wav(wav),
+        w.add("spcs_nso", split[speaker], PurePosixPath(rel).stem, speaker, text, "nso", read_wav(wav),
               info="nso+eng")
 
 
