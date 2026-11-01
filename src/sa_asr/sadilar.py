@@ -9,6 +9,7 @@ Layouts and markup were read from the corpora themselves (scripts/inspect_sadila
   Soap opera 5lang.xml: <utterance> with <audio> and <utterance_segment>s, each with <lang_id> and <transcription>.
   AST        telephone corpora: headerless 8 kHz A-law + Praat TextGrids whose Orthographic tier marks
              utterances (u)...(/u), noise [int] [sta] [sil], other-language speech ($)...(/$), truncated words '+'.
+             isiZulu has no TextGrids: its words are in .t02 phone alignments (its htk/*.lab files hold phones only).
 """
 
 from __future__ import annotations
@@ -134,6 +135,38 @@ def lab_utterances(lab: str) -> list[tuple[float, float | None, str]]:
     if any("(u)" in t for _, _, t in rows):
         return _group_utterances(rows)
     return [(rows[0][0], rows[-1][1], " ".join(t for _, _, t in rows))]
+
+
+def t02_utterance(t02: str) -> list[tuple[float, float, str]]:
+    """(start, end, raw text) of an AST .t02 alignment: a BHEAD...EHEAD header (FILLER gives the empty-cell mark),
+    then columns "ETimes Boundary_Type Phone Word Word_Type", one row per phone with its end time. The words are
+    read from the Word column (a word spread over several phone rows counts once); the span runs from the start of
+    the first spoken word to the end of the last, leaving out noise tags like [sta] at either end."""
+    lines = t02.splitlines()
+    filler = next((ln.split()[1] for ln in lines if ln.startswith("FILLER") and len(ln.split()) > 1), "-")
+    head = next((i for i, ln in enumerate(lines) if "Word" in ln.split() and "ETimes" in ln.split()), None)
+    if head is None:
+        return []
+    cols = lines[head].split()
+    wi, ti = cols.index("Word"), cols.index("ETimes")
+    words, prev_end, prev_word = [], 0.0, None  # words: [start, end, word]
+    for ln in lines[head + 1:]:
+        p = ln.split()
+        if len(p) <= max(wi, ti) or not _NUM.match(p[ti]):
+            continue
+        end, word = float(p[ti]), p[wi]
+        if word == filler:
+            prev_word = None
+        elif word == prev_word:
+            words[-1][1] = end
+        else:
+            words.append([prev_end, end, word])
+            prev_word = word
+        prev_end = end
+    spoken = [i for i, (_, _, wd) in enumerate(words) if not wd.startswith("[")]
+    if not spoken:
+        return []
+    return [(words[spoken[0]][0], words[spoken[-1]][1], " ".join(wd for _, _, wd in words))]
 
 
 def soap_label(langs: list[str]) -> str | None:

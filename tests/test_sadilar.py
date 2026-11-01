@@ -1,7 +1,7 @@
 import numpy as np
 
 from sa_asr.sadilar import (clean_ast, clean_sama, decode_alaw, lab_utterances, soap_label, split_of,
-                            textgrid_utterances)
+                            t02_utterance, textgrid_utterances)
 
 
 def test_clean_sama_keeps_foreign_words_and_drops_tags():
@@ -96,3 +96,21 @@ def test_nearest_pairs_reused_names_by_folder():
     assert nearest('C/speech/alaw/BA003/001.alaw', grids) is None
     assert nearest('C/x/001.alaw', grids[:1]) == grids[0]
     assert nearest('C/x/001.alaw', []) is None
+
+
+T02 = ("BHEAD\r\nFILLER -\r\nTDIV 1\r\nEHEAD\r\n\r\n"
+       "ETimes      Boundary_Type      Phone    Word     Word_Type    \r\n"
+       "2.532000    manually_placed    sta      [sta]    n/a          \r\n"
+       "2.700000    automatic          s        sawubona native       \r\n"
+       "2.800000    automatic          a        -        -            \r\n"
+       "3.100000    automatic          w        -        -            \r\n"
+       "3.300000    automatic          b        baba     native       \r\n"
+       "3.400000    automatic          a        baba     native       \r\n"
+       "4.000000    manually_placed    sil      [sil]    n/a          \r\n")
+
+
+def test_t02_utterance_reads_the_word_column():
+    (a, b, raw), = t02_utterance(T02)
+    assert raw == "[sta] sawubona baba [sil]" and clean_ast(raw) == "sawubona baba"
+    assert (a, b) == (2.532, 3.4)  # from the end of [sta] to the end of the last spoken word
+    assert t02_utterance("BHEAD\nEHEAD\n") == []

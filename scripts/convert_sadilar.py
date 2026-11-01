@@ -37,7 +37,7 @@ import soundfile as sf
 
 import sa_asr  # noqa: F401  (corporate-certificate fix before any download)
 from sa_asr.sadilar import (clean_ast, clean_sama, decode_alaw, lab_utterances, soap_label, split_of,
-                            textgrid_utterances)
+                            t02_utterance, textgrid_utterances)
 
 log = logging.getLogger("convert_sadilar")
 API = "https://repo.sadilar.org/server/api/core"
@@ -338,25 +338,33 @@ def convert_ast(work: Path, w: Writer) -> None:
             if lang is None:
                 log.warning("AST %s: language not recognised; skipped", accent)
                 continue
-            grids, labs = by_stem(names, ".textgrid"), by_stem(names, ".lab")
+            grids, t02s = by_stem(names, ".textgrid"), by_stem(names, ".t02")
+            # htk/*.lab are phone labels (isiZulu: "0 25320001 sta"), not words
+            labs = by_stem([n for n in names if "/htk/" not in n.lower()], ".lab")
+            for stem, cands in t02s.items():  # one .t02 per phone set (astbet, xsampa, ...): the Word column is shared
+                astbet = [c for c in cands if "/astbet/" in c.lower()]
+                t02s[stem] = astbet or cands
             alaws = [n for n in names if n.lower().endswith(".alaw")]
-            kept = ambiguous = from_lab = 0
+            kept = ambiguous = from_t02 = from_lab = 0
+            examples = []
             reused = {s for s, k in Counter(PurePosixPath(n).stem.lower() for n in alaws).items() if k > 1}
             for n in alaws:
                 stem = PurePosixPath(n).stem  # BE000CF001: database, speaker, call, utterance
                 # a reused name (001.alaw in each speaker folder): the folder is the speaker
                 folder = PurePosixPath(n).parent.name if stem.lower() in reused else None
                 uid, speaker = (f"{folder}_{stem}", folder) if folder else (stem, stem[:7])
-                src = nearest(n, grids.get(stem.lower(), []))
-                if src is not None:
+                key = stem.lower()
+                if (src := nearest(n, grids.get(key, []))) is not None:
                     utts = textgrid_utterances(text_of(z.read(src)))
-                else:
-                    src = nearest(n, labs.get(stem.lower(), []))
-                    if src is None:
-                        ambiguous += len(grids.get(stem.lower(), [])) > 1 or len(labs.get(stem.lower(), [])) > 1
-                        continue
+                elif (src := nearest(n, t02s.get(key, []))) is not None:
+                    utts = t02_utterance(text_of(z.read(src)))
+                    from_t02 += 1
+                elif (src := nearest(n, labs.get(key, []))) is not None:
                     utts = lab_utterances(text_of(z.read(src)))
                     from_lab += 1
+                else:
+                    ambiguous += any(len(d.get(key, [])) > 1 for d in (grids, t02s, labs))
+                    continue
                 wav = None
                 for i, (a, b, raw) in enumerate(utts):
                     text = clean_ast(raw)
@@ -367,15 +375,17 @@ def convert_ast(work: Path, w: Writer) -> None:
                     w.add(f"ast_{lang}", split_of(f"ast:{accent}:{speaker}"), f"{uid}_{i}", speaker, text, lang, clip,
                           info=accent.removeprefix("AST ").strip())
                     kept += 1
-            log.info("AST %s: %d utterances (%d audio files, %d TextGrids, %d .lab files, %d audio files read from "
-                     ".lab, %d skipped as ambiguous)", accent, kept, len(alaws),
-                     sum(map(len, grids.values())), sum(map(len, labs.values())), from_lab, ambiguous)
-            if from_lab or not kept:  # show the layout and sample transcriptions, to check or fix the reader
+                    if len(examples) < 3:
+                        examples.append(f"{uid} {len(clip) / SR:.1f}s: {text}")
+            log.info("AST %s: %d utterances (%d audio files, %d TextGrids, %d .t02 used, %d .lab used, "
+                     "%d skipped as ambiguous); e.g. %s", accent, kept, len(alaws), sum(map(len, grids.values())),
+                     from_t02, from_lab, ambiguous, examples)
+            if from_t02 or from_lab or not kept:  # show the layout and sample transcriptions, to check the reader
                 samples = {}
                 for n in names:
                     ext = PurePosixPath(n).suffix.lower()
                     if ext in (".lab", ".t02", ".textgrid") and ext not in samples:
-                        samples[ext] = (n, text_of(z.read(n))[:300])
+                        samples[ext] = (n, text_of(z.read(n))[:800])
                 log.warning("AST %s: file types %s; members %s; samples %s", accent,
                             Counter(PurePosixPath(n).suffix.lower() for n in names).most_common(8), names[:8], samples)
             z.close()
