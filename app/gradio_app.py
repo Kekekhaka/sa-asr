@@ -279,6 +279,29 @@ HEAD = """<script>
   };
   let tries = 0;
   const poll = setInterval(() => { wrap(window.parentIFrame); if (window.parentIFrame?.__saWrapped || ++tries > 150) clearInterval(poll); }, 100);
+  // iPhone/iPad in the Space page's frame: the frame flipped between two widths several times a second (a screen
+  // recording showed the layout switching between a wide, cut-off version and the normal one), because every width
+  // change reflows the page, changes its height and resizes the frame again. The app's width is locked to the
+  // screen's: it can only get narrower (so it cannot flip back and forth) and is reset when the phone is turned.
+  const framed = window.self !== window.top;
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let lockW = 0;
+  if (framed && ios) {
+    const screenW = () => {
+      const t = screen.orientation?.type || (Math.abs(window.orientation || 0) === 90 ? 'landscape' : 'portrait');
+      return t.startsWith('landscape') ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+    };
+    const lock = reset => {
+      const w = Math.floor(Math.min(innerWidth, screenW()));
+      if (!reset && lockW && w >= lockW) return;
+      lockW = w;
+      document.documentElement.style.setProperty('--sa-lock-w', w + 'px');
+      document.documentElement.classList.add('sa-lock');
+    };
+    lock(true);
+    addEventListener('resize', () => lock(false));
+    addEventListener('orientationchange', () => setTimeout(() => lock(true), 400));
+  }
   // Inside the Space page's frame, show "Open full screen": the frame's address (with a private Space's signed
   // token) opened as its own page, where iOS Safari cannot stretch and shrink the frame.
   // TEMPORARY (iPhone shake hunt): a corner readout of width, zoom, page height and resize events per second, so a
@@ -293,11 +316,21 @@ HEAD = """<script>
     window.visualViewport && visualViewport.addEventListener('resize', () => vrz++);
     const p = window.parentIFrame;
     if (p && p.size) { const s = p.size; p.size = (...a) => { sent++; return s(...a); }; }
+    // the element sticking out furthest to the right, if anything does (what would widen the frame)
+    const widest = () => {
+      let best = null, right = innerWidth + 1;
+      for (const el of document.body.querySelectorAll('*')) {
+        const r = el.getBoundingClientRect().right;
+        if (r > right) { right = r; best = el; }
+      }
+      return best ? `${best.tagName.toLowerCase()}.${[...best.classList].slice(0, 2).join('.')} r${Math.round(right)}` : 'none';
+    };
     setInterval(() => {
       const v = window.visualViewport, d = document.documentElement;
       box.textContent = `${window.self !== window.top ? 'FRAME' : 'FULL'} w${innerWidth} cw${d.clientWidth} sw${d.scrollWidth}` +
+        ` lock${lockW || '-'} sc${screen.width}` +
         `\\nzoom ${v ? v.scale.toFixed(2) : '?'} vw${v ? Math.round(v.width) : '?'} h${d.scrollHeight}` +
-        `\\nresize/s ${rz} vv/s ${vrz} size()/s ${sent}`;
+        `\\nresize/s ${rz} vv/s ${vrz} size()/s ${sent}\\nwide: ${widest()}`;
       rz = vrz = sent = 0;
     }, 1000);
   };
@@ -359,6 +392,9 @@ CSS = """
    flip between two widths. Nothing may stick out sideways, and text keeps its size. */
 html, body { overflow-x: hidden !important; max-width: 100%; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 .gradio-container, .gradio-container * { min-width: 0; }
+/* iPhone/iPad in the Space page's frame: the width set by the script in HEAD (sa-lock), so the layout ignores the
+   frame flipping wider */
+html.sa-lock, html.sa-lock body { width: var(--sa-lock-w) !important; max-width: var(--sa-lock-w) !important; }
 .sa-full { display: none; margin-top: 10px; padding: 6px 14px; border-radius: 999px; font-size: .82rem; font-weight: 600;
   color: var(--sa-accent) !important; text-decoration: none !important; border: 1px solid var(--sa-accent); }
 .sa-framed .sa-full { display: inline-block !important; }  /* Gradio also adds a stronger, prefixed copy of each rule */
