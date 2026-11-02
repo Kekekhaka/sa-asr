@@ -41,8 +41,9 @@ corpora:
   # stream) are rare, spontaneous and code-switched, so they are drawn well above their size; SAMA (120 h of radio
   # news and drama, 6 streams) is plentiful and gets an ordinary weight; AST (57 h) is telephone prompts (names,
   # numbers, addresses) and Multipron (8 h) is read names, so both stay small.
+  # The language weights below multiply these too: soap eng = 3.0 x 1.25, spcs nso = 1.5 x 3.0, sama nso = 1.0 x 3.0.
   soap: 3.0
-  spcs: 3.0
+  spcs: 1.5
   sama: 1.0
   ast: 0.4
   multipron: 0.3
@@ -51,7 +52,8 @@ language_weights:
   nso: 3.0
   ssw: 3.5
   afr: 2.5
-  eng: 2.0            # was 4.0: English now has soap, AST and Multipron streams on top of nchlt_eng
+  eng: 1.25           # was 4.0: English now has soap, AST and Multipron streams on top of nchlt_eng; these
+                      # multiply, so English's share of draws is ~4.4%, as in round 4 (4.0%), not higher
 
 text: clean
 max_duration_s: 30
