@@ -32,7 +32,7 @@ from sa_asr.translate import ROUTES, can_translate, translate_segments
 UPLOAD_TYPES = ["wav", "mp3", "flac", "ogg", "opus", "m4a", "aac", "webm", "mp4"]
 DEFAULT_FINETUNED = PROJECT_ROOT / "outputs" / "whisper-turbo-sa-lora" / "final"
 # The trained model on the Hub (train.py --hub-repo); set SA_ASR_MODEL to use another one.
-DEFAULT_HUB_MODEL = os.environ.get("SA_ASR_MODEL", "KekeCode/sa-asr-whisper-lora-v4")
+DEFAULT_HUB_MODEL = os.environ.get("SA_ASR_MODEL", "KekeCode/sa-asr-whisper-lora-v5")
 # Set on the Space (scripts/space.py): saved corrections are also copied to this private dataset.
 FEEDBACK_REPO = os.environ.get("SA_ASR_FEEDBACK_REPO")
 

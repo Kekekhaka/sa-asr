@@ -40,7 +40,7 @@ except ImportError:
     def gpu(duration=None):
         return lambda fn: fn
 
-MODEL_ID = os.environ.get("SA_ASR_MODEL", "KekeCode/sa-asr-whisper-lora-v4")
+MODEL_ID = os.environ.get("SA_ASR_MODEL", "KekeCode/sa-asr-whisper-lora-v5")
 FEEDBACK_REPO = os.environ.get("SA_ASR_FEEDBACK_REPO")
 # The second model costs ~3 GB and start-up time; set SA_ASR_SECOND=0 to leave it out.
 WITH_SECOND = os.environ.get("SA_ASR_SECOND", "1") != "0"
