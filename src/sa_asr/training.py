@@ -19,7 +19,7 @@ from .audio import SAMPLE_RATE, augment, decode_audio, duration_seconds, noise_f
 from .config import Language
 from .data import CORPORA, eval_row_audio, stream_corpus
 from .metrics import score
-from .text import clean_transcript, normalize_for_scoring
+from .text import clean_transcript, collapse_repeats, normalize_for_scoring
 
 log = logging.getLogger(__name__)
 
@@ -513,7 +513,7 @@ class WhisperWERTrainer(Seq2SeqTrainer):
                         task="transcribe",
                         max_new_tokens=225,
                     )
-                hyps += self.wer_processor.batch_decode(ids, skip_special_tokens=True)
+                hyps += [collapse_repeats(t) for t in self.wer_processor.batch_decode(ids, skip_special_tokens=True)]
                 refs += batch["text"]
                 self.control = self.callback_handler.on_prediction_step(self.args, self.state, self.control)
             s = score(refs, hyps)

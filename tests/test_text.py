@@ -1,6 +1,22 @@
 import unicodedata
 
-from sa_asr.text import clean_transcript, normalize_for_scoring
+from sa_asr.text import clean_transcript, collapse_repeats, normalize_for_scoring
+
+
+def test_collapse_repeats_cuts_word_and_phrase_loops():
+    assert collapse_repeats("bona keng wa " + "ha " * 80) == "bona keng wa ha ha ha ha ha"
+    assert collapse_repeats("sibili " + "sithandathu " * 40 + "canda") == "sibili " + "sithandathu " * 5 + "canda"
+    assert collapse_repeats("u khou ri " + "hee ha " * 10) == "u khou ri" + " hee ha" * 5
+
+
+def test_collapse_repeats_keeps_real_speech():
+    for text in ("hayi hayi hayi sho sho mphathi", "swa swa swa swa vurimi", "a a a a a", "ka kitima ka kitima wee", "nanana a a a", ""):
+        assert collapse_repeats(text) == " ".join(text.split())
+
+
+def test_collapse_repeats_cuts_letter_loops():
+    assert collapse_repeats("uthi " + "ha" * 100) == "uthi hahahahaha"
+    assert collapse_repeats("eiiiiii wooo") == "eiiiiii wooo"
 
 
 def test_clean_strips_annotation_tags_keeps_case_and_punctuation():

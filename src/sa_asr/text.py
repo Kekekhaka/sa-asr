@@ -30,6 +30,40 @@ def clean_transcript(text: str) -> str:
     return WHITESPACE.sub(" ", text).strip()
 
 
+# A 1-4 letter piece repeated 7+ times inside one word ("hahahahahahaha...").
+LETTER_LOOP = re.compile(r"(\S{1,4}?)\1{6,}")
+
+
+def collapse_repeats(text: str, max_repeats: int = 5, max_phrase: int = 6) -> str:
+    """Loop guard for decoded text: a word or phrase (up to max_phrase words) repeated more than
+    max_repeats times in a row is cut back to max_repeats copies.
+
+    Whisper sometimes gets stuck on long or noisy clips and repeats one word until the token limit
+    ("ha ha ha ha ...", "sithandathu sithandathu ..."), and a single such clip can add hundreds of
+    insertions to a test set. Real speech repeats a word a few times at most ("hayi hayi hayi", a
+    stammered "swa swa swa swa" in Swivuriso Xitsonga), which stays untouched. Letter loops inside
+    one word are cut back the same way.
+    """
+    text = LETTER_LOOP.sub(lambda m: m.group(1) * max_repeats, text)
+    words = text.split()
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        for n in range(1, max_phrase + 1):
+            unit = words[i : i + n]
+            reps = 1
+            while words[i + reps * n : i + (reps + 1) * n] == unit:
+                reps += 1
+            if reps > max_repeats:
+                out += unit * max_repeats
+                i += reps * n
+                break
+        else:
+            out.append(words[i])
+            i += 1
+    return " ".join(out)
+
+
 def normalize_for_scoring(text: str) -> str:
     """Scoring normalization: clean, lowercase, drop punctuation.
 

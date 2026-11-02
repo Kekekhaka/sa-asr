@@ -21,6 +21,7 @@ import torch
 
 from .audio import SAMPLE_RATE
 from .config import Language
+from .text import collapse_repeats
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +94,8 @@ class WhisperTranscriber(Transcriber):
               choice for models whose language-token scheme is unknown)
       proxy   force the proxy token from languages.yaml (models trained by this project)
       native  force the real token when Whisper knows the language, else auto
+
+    loop_guard cuts runaway repeats from the output (text.collapse_repeats); False gives raw output.
     """
 
     def __init__(
@@ -104,6 +107,7 @@ class WhisperTranscriber(Transcriber):
         device: str | None = None,
         num_beams: int = 1,
         max_new_tokens: int = 225,
+        loop_guard: bool = True,
     ):
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
@@ -115,6 +119,7 @@ class WhisperTranscriber(Transcriber):
         self.dtype = pick_dtype(self.device)
         self.num_beams = num_beams
         self.max_new_tokens = max_new_tokens
+        self.loop_guard = loop_guard
 
         model_path = localize_model(model)
         if model_path.exists():
@@ -204,7 +209,10 @@ class WhisperTranscriber(Transcriber):
         if language is not None:
             kwargs["language"] = language
         out = self.model.generate(feats.input_features.to(self.device, self.dtype), **kwargs)
-        return [t.strip() for t in self.processor.batch_decode(out, skip_special_tokens=True)]
+        return [self._finish(t) for t in self.processor.batch_decode(out, skip_special_tokens=True)]
+
+    def _finish(self, text: str) -> str:
+        return collapse_repeats(text) if self.loop_guard else text.strip()
 
     @torch.inference_mode()
     def transcribe_nbest(self, audios: list[np.ndarray], lang: Language, n: int) -> list[list[tuple[str, float]]]:
@@ -235,7 +243,7 @@ class WhisperTranscriber(Transcriber):
             return_dict_in_generate=True,
             output_scores=True,
         )
-        texts = [t.strip() for t in self.processor.batch_decode(out.sequences, skip_special_tokens=True)]
+        texts = [self._finish(t) for t in self.processor.batch_decode(out.sequences, skip_special_tokens=True)]
         scores = out.sequences_scores.float().tolist()
         return [list(zip(texts[i * n : (i + 1) * n], scores[i * n : (i + 1) * n])) for i in range(len(audios))]
 
