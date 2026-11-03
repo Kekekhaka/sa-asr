@@ -83,12 +83,31 @@ def chip(code: str | None, text: str | None = None) -> str:
             f'{html.escape(text or short(code))}</span>')
 
 
-@gpu(duration=GPU_SECONDS)
+def gpu_seconds(wav: np.ndarray, lang_code: str | None, use_second: bool, beams: int, rescore: bool = False) -> int:
+    """GPU time to ask ZeroGPU for, from the recording's length. ZeroGPU only starts a call if the quota left covers
+    the whole request, so asking for GPU_SECONDS every time refused short clips long before the quota was used up.
+    An 18 s clip took 1.7 s; this allows 20 s plus 12 s per minute of audio, more for the slower options."""
+    need = 20 + 12 * duration_seconds(wav) / 60
+    need *= (2.5 if rescore else 1) * (1.5 if use_second else 1) * (1 + 0.25 * (max(beams, 1) - 1))
+    return int(min(GPU_SECONDS, need))
+
+
+@gpu(duration=gpu_seconds)
 def run_model(wav: np.ndarray, lang_code: str | None, use_second: bool, beams: int, rescore: bool = False) -> dict:
     MODEL.num_beams = beams
     model = RESCORER if rescore and RESCORER is not None else MODEL
     return transcribe_audio(model, wav, registry, lang_code, mixed=lang_code is None, text_lid=TEXT_LID,
                             second_model=SECOND if use_second else None)
+
+
+def summary_card(stats: list[tuple[str, str]], title: str, parts: list[tuple[str, float]], legend: str, note: str) -> str:
+    """The summary card always has the same rows (tiles, label, bar, one line of chips, a two-line note), so it keeps
+    its height whatever the result: the page must not change size when a result arrives (phones shook)."""
+    bar = "".join(f'<i style="width:{100 * p:.1f}%;background:{COLORS.get(c, "#94A3B8")}"></i>' for c, p in parts)
+    return ('<div class="sa-card sa-summary"><div class="sa-stats">'
+            + "".join(f'<div class="sa-stat"><span>{k}</span><b>{html.escape(v)}</b></div>' for k, v in stats)
+            + f'</div><div class="sa-label">{title}</div><div class="sa-bar">{bar}</div>'
+            f'<div class="sa-legend">{legend or "&nbsp;"}</div><div class="sa-note">{note or "&nbsp;"}</div></div>')
 
 
 def summary_html(result: dict, shares: dict[str, float], chosen: bool, note: str = "") -> str:
@@ -97,25 +116,27 @@ def summary_html(result: dict, shares: dict[str, float], chosen: bool, note: str
     if mixed:
         lang_value, title, parts = f"{len(shares)} languages", "Language mix · share of speaking time", list(
             shares.items())
+        legend = "".join(chip(c, f"{short(c)} {p:.0%}") for c, p in parts)
+    elif chosen:
+        lang_value, title = short(result["language"]), "You chose the language"
+        parts, legend = [(result["language"], 1.0)], chip(result["language"])
     else:
         lang_value = short(result["language"]) if result["language"] else "Chosen by Whisper"
-        title = "You chose the language" if chosen else "Detection confidence"
-        parts = [] if chosen else list((result["detected"] or {}).items())[:3]
+        title, parts = "Detection confidence", list((result["detected"] or {}).items())[:3]
+        legend = "".join(chip(c, f"{short(c)} {p:.0%}") for c, p in parts)
     stats = [("Language", lang_value), ("Length", fmt_time(result["duration"])),
              ("Took", f"{result['elapsed']:.1f} s")]
-    out = '<div class="sa-card sa-summary"><div class="sa-stats">' + "".join(
-        f'<div class="sa-stat"><span>{k}</span><b>{html.escape(v)}</b></div>' for k, v in stats) + "</div>"
-    if parts:
-        bar = "".join(f'<i style="width:{100 * p:.1f}%;background:{COLORS.get(c, "#94A3B8")}"></i>'
-                      for c, p in parts)
-        out += (f'<div class="sa-label">{title}</div><div class="sa-bar">{bar}</div><div class="sa-legend">'
-                + "".join(chip(c, f"{short(c)} {p:.0%}") for c, p in parts) + "</div>")
+    notes = []
     if result.get("rerouted"):
-        out += (f'<div class="sa-note">{result["rerouted"]} clear part(s) were transcribed by the second model '
-                f"({html.escape(DSFSI_MODEL)}, MIT licence).</div>")
+        notes.append(f'{result["rerouted"]} clear part(s) were transcribed by the second model '
+                     f"({html.escape(DSFSI_MODEL)}, MIT licence).")
     if note:
-        out += f'<div class="sa-note">{html.escape(note)}</div>'
-    return out + "</div>"
+        notes.append(html.escape(note))
+    return summary_card(stats, title, parts, legend, " ".join(notes))
+
+
+EMPTY_SUMMARY = summary_card([("Language", "—"), ("Length", "—"), ("Took", "—")], "Detection confidence", [], "",
+                             "Your result appears here.")
 
 
 def timeline_html(segs: list[dict], mixed: bool) -> str:
@@ -149,7 +170,14 @@ def transcribe(uploaded, recorded, lang_name, use_second, beams, extra=False):
     rescore = bool(extra) and RESCORER is not None and seconds <= RESCORE_MINUTES * 60
     note = (f"Extra accuracy is used for recordings up to {RESCORE_MINUTES} minutes; this one was transcribed normally."
             if extra and RESCORER is not None and not rescore else "")
-    result = run_model(wav, NAMES[lang_name] if chosen else None, use_second, int(beams), rescore)
+    try:
+        result = run_model(wav, NAMES[lang_name] if chosen else None, use_second, int(beams), rescore)
+    except Exception as e:
+        if "quota" not in str(e).lower():
+            raise
+        raise gr.Error("The free GPU time for today is used up for this account (Hugging Face's ZeroGPU quota). It "
+                       "refills over the day; shorter recordings need less of it, and the Extra accuracy and second "
+                       f"model options more. Details: {e}", duration=None) from e
 
     shares = result.get("languages") or {}
     mixed = len(shares) > 1
@@ -162,11 +190,13 @@ def transcribe(uploaded, recorded, lang_name, use_second, beams, extra=False):
     txt.write_text(result["text"], encoding="utf-8")
     state = {"wav": wav, "segments": segs, "language": result["language"], "text": result["text"]}
     heard = sorted({r[1] for r in rows})
-    return (gr.Column(visible=True), summary_html(result, shares, chosen, note),
-            result["text"] or "(no speech recognised)", gr.DownloadButton(value=str(txt), visible=True),
-            gr.Accordion(label=f"Timeline · {len(segs)} parts", open=mixed, visible=len(segs) > 1),
+    # Everything below is already on the page and only its contents change (no showing, hiding or opening), so the
+    # page keeps its height when the result arrives.
+    return (summary_html(result, shares, chosen, note),
+            result["text"] or "(no speech recognised)", gr.DownloadButton(value=str(txt), interactive=True),
+            gr.Accordion(label=f"Timeline · {len(segs)} part{'s' if len(segs) > 1 else ''}"),
             timeline_html(segs, mixed), gr.Dataframe(value=rows, row_count=(len(rows), "fixed")),
-            gr.update(value=heard), state, gr.Textbox(value="", visible=False), "")
+            gr.update(value=heard), state, "", "")
 
 
 def translate(state):
@@ -174,7 +204,7 @@ def translate(state):
         raise gr.Error("Transcribe something first.")
     if not any(can_translate(s.get("language")) or s.get("language") == "eng" for s in state["segments"]):
         raise gr.Error("No translation model covers this language.")
-    return gr.Textbox(value=" ".join(p for p in translate_segments(state["segments"]) if p), visible=True)
+    return " ".join(p for p in translate_segments(state["segments"]) if p)
 
 
 def _rows(table) -> list:
@@ -344,15 +374,19 @@ HEAD = """<script>
   }
 })();
 </script>"""
-DONE_JS ="() => { document.getElementById('sa-results')?.scrollIntoView({behavior: 'smooth', block: 'start'}); }"
+# The same box, at rest: the status slot always holds one of the two, so it never appears or disappears.
+READY = """<div class="sa-card sa-busy sa-idle">
+  <div class="sa-eq"><i></i><i></i><i></i><i></i><i></i></div>
+  <div class="sa-busy-text"><b>Ready</b><div class="sa-steps"><em>The result appears below.</em></div></div>
+</div>"""
 
 
 def busy():
-    return BUSY, gr.Button("Transcribing…", interactive=False), gr.Column(visible=False)
+    return BUSY, gr.Button("Transcribing…", interactive=False)
 
 
 def idle():
-    return "", gr.Button("Transcribe", interactive=True)
+    return READY, gr.Button("Transcribe", interactive=True)
 
 
 def step(n: int, title: str, hint: str = "") -> gr.HTML:
@@ -395,6 +429,15 @@ html, body { overflow-x: hidden !important; max-width: 100%; -webkit-text-size-a
 /* iPhone/iPad in the Space page's frame: the width set by the script in HEAD (sa-lock), so the layout ignores the
    frame flipping wider */
 html.sa-lock, html.sa-lock body { width: var(--sa-lock-w) !important; max-width: var(--sa-lock-w) !important; }
+/* The audio player that appears after an upload or a recording: Gradio gives its box width 100% plus padding, so on
+   a phone it stuck out past the screen, the iPhone frame widened, the waveform redrew at the new width and stuck out
+   again (the shake started on upload). Padding counts inside the width, and the waveform's width never follows its
+   contents. */
+.gradio-container .component-wrapper, .gradio-container .waveform-container, .gradio-container #waveform,
+.gradio-container .timestamps, .gradio-container .controls { box-sizing: border-box !important; max-width: 100% !important; }
+.gradio-container .component-wrapper, .gradio-container .waveform-container, .gradio-container #waveform {
+  overflow: hidden !important; contain: inline-size; }
+.gradio-container canvas, .gradio-container audio { max-width: 100% !important; }
 .sa-full { display: none; margin-top: 10px; padding: 6px 14px; border-radius: 999px; font-size: .82rem; font-weight: 600;
   color: var(--sa-accent) !important; text-decoration: none !important; border: 1px solid var(--sa-accent); }
 .sa-framed .sa-full { display: inline-block !important; }  /* Gradio also adds a stronger, prefixed copy of each rule */
@@ -463,6 +506,8 @@ footer { display: none !important; }
   animation: sa-slide 1.4s ease-in-out infinite; will-change: transform; }
 @keyframes sa-slide { from { transform: translateX(-100%) } to { transform: translateX(290%) } }
 @media (prefers-reduced-motion: reduce) { .sa-eq i, .sa-progress i { animation: none; } }
+.sa-idle .sa-eq i { animation: none; transform: scaleY(.25); opacity: .5; }
+.sa-idle .sa-steps em { opacity: 1; animation: none; }
 
 /* results */
 #sa-results { scroll-margin-top: 12px; }
@@ -475,8 +520,13 @@ footer { display: none !important; }
 .sa-label { margin: 16px 0 8px; font-size: .82rem; color: var(--body-text-color-subdued); }
 .sa-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--background-fill-secondary); }
 .sa-bar i { height: 100%; } .sa-bar i + i { margin-left: 2px; }
-.sa-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.sa-note { margin-top: 12px; font-size: .82rem; color: var(--body-text-color-subdued); }
+/* one line of chips (scrolls sideways inside itself if they do not fit) and a two-line note: the card's height is fixed */
+.sa-legend { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 10px; overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; min-height: 26px; }
+.sa-legend::-webkit-scrollbar { display: none; }
+.sa-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sa-note { margin-top: 12px; font-size: .82rem; line-height: 1.4; height: 2.8em; overflow: hidden;
+  color: var(--body-text-color-subdued); }
 #sa-transcript textarea { font-size: 1.08rem !important; line-height: 1.6 !important; }
 .sa-timeline { display: flex; flex-direction: column; gap: 10px; }
 .sa-seg { border-left: 3px solid var(--c); padding: 4px 0 4px 12px; }
@@ -537,18 +587,21 @@ with gr.Blocks(title="South African Speech-to-Text") as demo:
     lang = gr.Dropdown([AUTO] + list(NAMES), value=AUTO, show_label=False, container=False)
 
     go = gr.Button("Transcribe", variant="primary", size="lg", elem_id="sa-go")
-    status = gr.HTML()
+    status = gr.HTML(READY)
 
-    with gr.Column(visible=False, elem_id="sa-results") as results:
+    # The whole result area is on the page from the start, in fixed-size boxes; a result only fills them in (like a
+    # Streamlit page), so nothing appears, opens or grows when it arrives. Phones shook when the page changed size.
+    with gr.Column(elem_id="sa-results"):
         step(3, "Result")
-        summary_box = gr.HTML()
-        transcript = gr.Textbox(label="Transcript", lines=5, buttons=["copy"], elem_id="sa-transcript")
-        with gr.Row(equal_height=True):
-            download = gr.DownloadButton("⬇ Download .txt", visible=False, variant="secondary", size="md")
-            tr_btn = gr.Button("🌍 Translate to English", variant="secondary", size="md")
-        translation = gr.Textbox(label="English translation", lines=3, buttons=["copy"], visible=False)
-        with gr.Accordion("Timeline", open=False, visible=False) as seg_box:
-            timeline = gr.HTML()
+        summary_box = gr.HTML(EMPTY_SUMMARY)
+        transcript = gr.Textbox(label="Transcript", lines=6, max_lines=6, autoscroll=False, buttons=["copy"],
+                                placeholder="The transcript appears here.", elem_id="sa-transcript")
+        download = gr.DownloadButton("⬇ Download .txt", interactive=False, variant="secondary", size="md")
+        tr_btn = gr.Button("🌍 Translate to English", variant="secondary", size="md")
+        translation = gr.Textbox(label="English translation", lines=3, max_lines=3, autoscroll=False,
+                                 buttons=["copy"], placeholder="Press Translate to English after a transcription.")
+        with gr.Accordion("Timeline", open=False) as seg_box:
+            timeline = gr.HTML('<div class="sa-hint">Each part of the recording, with its language.</div>')
 
         with gr.Accordion("✏️ Wrong language or words? Help improve the model", open=False):
             gr.HTML('<div class="sa-hint">Fix the language and the text of each part. Saved corrections (audio + '
@@ -579,13 +632,13 @@ with gr.Blocks(title="South African Speech-to-Text") as demo:
     gr.HTML(f'<div class="sa-foot">Model {html.escape(MODEL_ID)} · Whisper large-v3-turbo + LoRA, trained largely on '
             "Swivuriso (CC BY 4.0, DSFSI, University of Pretoria). See the Space page for all credits.</div>")
 
-    go.click(busy, None, [status, go, results], queue=False, show_progress="hidden").then(
+    go.click(busy, None, [status, go], queue=False, show_progress="hidden").then(
         transcribe, [uploaded, recorded, lang, second, beams, extra],
-        [results, summary_box, transcript, download, seg_box, timeline, parts, heard, state, translation, saved],
+        [summary_box, transcript, download, seg_box, timeline, parts, heard, state, translation, saved],
         show_progress="hidden",
-    ).then(idle, None, [status, go], js=DONE_JS, queue=False)
-    tr_btn.click(lambda: gr.Textbox(value="Translating…", visible=True), None, translation, queue=False).then(
-        translate, state, translation)
+    ).then(idle, None, [status, go], queue=False)
+    tr_btn.click(lambda: "Translating…", None, translation, queue=False).then(
+        translate, state, translation, show_progress="hidden")
     # the word picker follows the corrected parts: editing a part's text or language resets it
     parts.change(refresh_words, parts, [words, word_pick, word_view], queue=False)
     cs.change(lambda on: gr.Group(visible=on), cs, cs_box, queue=False)
