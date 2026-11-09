@@ -1,0 +1,102 @@
+# Round 6: round 5's data and augmentation, with the languages' shares rebalanced.
+#   python scripts/train.py --config configs/train_lora_v6.yaml --hub-repo <user>/sa-asr-whisper-lora-v6 --resume
+# (on Kaggle: STAGE = "train_v6", run it twice: each session stops after ~11 h and the second resumes;
+#  attach the MUSAN dataset to the notebook, as for rounds 4 and 5)
+#
+# Why (2026-11-09), from round 5's tests:
+#  - the SADiLaR streams added draws for six languages only, so the others lost share: isiNdebele and Xitsonga fell
+#    from 9.5% to 8.0% of draws and got worse (natural speech isiNdebele 23.7 -> 25.5, Xitsonga 18.8 -> 20.0 WER;
+#    Lwazi isiNdebele +2.4, Xitsonga +2.2), and siSwati fell from 7.5% to 4.6%. Their language weights bring them back
+#    to round 4's shares.
+#  - Sepedi had 11.7% (weight 3.0 on top of its SPCS and SAMA streams) and language detection drifted towards it:
+#    25% of Setswana and 10% of Sesotho clips were detected as Sepedi (NCHLT Setswana 39% -> 14%). Sepedi goes back
+#    to ~9.5%, and Setswana gets a little more (11.9%).
+#  Shares of draws (corpus weight x language weight, all streams): v4 / v5 / v6
+#    nbl 9.5 / 8.0 / 9.3   tso 9.5 / 8.0 / 9.3   ssw 7.5 / 4.6 / 6.7   nso 10.1 / 11.7 / 9.5   tsn 10.1 / 10.6 / 11.9
+#    xho 11.3 / 12.4 / 11.6   zul 10.7 / 12.3 / 11.4   sot 10.1 / 11.9 / 11.1   ven 9.5 / 8.8 / 8.2
+#    afr 6.9 / 7.4 / 6.9   eng 4.9 / 4.4 / 4.1
+# Training validation now applies the loop guard (text.collapse_repeats), so one runaway clip no longer swings a set.
+#
+# Judge it on: natural_v6, compare_v6, lid_v6 and sadilar_v6 against round 5, all with the loop guard (round 5's
+# saved predictions re-scored with scripts/rescore_loopguard.py): natural 22.1, held-out 25.9, SADiLaR 49.0 WER;
+# language detection 86.5% whole clip, 76.8% at 3 s. Wins needed: isiNdebele and Xitsonga back to round 4, Setswana
+# detection up, and nothing else worse.
+
+base_model: openai/whisper-large-v3-turbo
+init_adapter: KekeCode/sa-asr-whisper-lora-v5   # round 5: LoRA weights and the trained language tokens
+output_dir: outputs/whisper-turbo-sa-lora-v6
+
+languages: all
+
+corpora:
+  nchlt: 0.75
+  swivuriso: 6.0
+  swivuriso_unscripted: 3.0
+  nchlt_eng: 1.0
+  lwazi: 1.0
+  fleurs: 1.0
+  openslr32: 0.5
+  # SADiLaR (private dataset KekeCode/sa-asr-sadilar), as in round 5; the language weights below multiply these.
+  soap: 3.0
+  spcs: 1.5
+  sama: 1.0
+  ast: 0.4
+  multipron: 0.3
+
+language_weights:
+  nso: 2.6            # was 3.0: 11.7% of draws pulled Setswana and Sesotho detection towards Sepedi
+  tsn: 1.2            # new: Setswana is the language most often detected as something else (Sepedi)
+  ssw: 5.5            # was 3.5: siSwati has no SADiLaR data, its share had fallen to 4.6%
+  nbl: 1.25           # new: isiNdebele and Xitsonga have no SADiLaR data either and got worse in round 5
+  tso: 1.25
+  afr: 2.5
+  eng: 1.25
+
+text: clean
+max_duration_s: 30
+max_label_tokens: 440
+shuffle_buffer: 64
+
+augment:
+  telephone_prob: 0.3
+  noise_prob: 0.15
+  speed_prob: 0.3
+  reverb_prob: 0.2
+  noise_dir: /kaggle/input/datasets/nhattruongdev/musan-noise/musan/noise
+  packet_loss_prob: 0.5
+  lid_crop_prob: 0.1      # kept: 3 s language detection rose 74.5% -> 76.8% in round 5
+  lid_crop_s: [2.0, 5.0]
+
+lora:                 # r/alpha/targets come from the adapter being continued
+  enabled: true
+  train_language_tokens: true
+  r: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, out_proj, fc1, fc2]
+
+training:
+  max_steps: 2400     # two Kaggle sessions, as in rounds 3-5
+  lid_loss_weight: 1.0
+  per_device_train_batch_size: 32
+  per_device_eval_batch_size: 32
+  gradient_accumulation_steps: 1
+  learning_rate: 5.0e-5
+  warmup_steps: 100
+  lr_scheduler_type: linear
+  weight_decay: 0.0
+  gradient_checkpointing: true
+  eval_steps: 600
+  save_steps: 600
+  save_total_limit: 3
+  logging_steps: 10
+  dataloader_num_workers: 0
+  report_to: none
+  seed: 47            # a different data order from rounds 1-5
+  max_runtime_hours: 11.75
+  checkpoint_every_hours: 2.0
+  stall_timeout_minutes: 40
+
+validation:
+  cache_dir: data/eval_cache
+  max_samples_per_set: 32
