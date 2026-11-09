@@ -12,3 +12,6 @@ wandb/
 logs/
 *.log
 BUILD.txt
+
+# phone screen recordings made while debugging the app
+ScreenRecording_*
