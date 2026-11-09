@@ -14,6 +14,10 @@ private model and to save corrections. Corrections go to the private dataset <us
 variable SA_ASR_FEEDBACK_REPO), because a Space's own disk is wiped on every restart; fetch them with
 `python scripts/feedback.py pull --repo <user>/sa-asr-feedback`.
 
+To share it privately, move the Space to a Hugging Face organization (Space Settings -> Rename or transfer) and
+invite people as read members; push with --repo <org>/sa-asr-app from then on. The model, the corrections and the
+token stay yours (<user> is whoever owns HF_TOKEN), and visitors' GPU time counts against their own ZeroGPU quota.
+
 ZeroGPU lends a GPU for each transcription (up to GPU_SECONDS in gradio_app.py), counted against a daily quota.
 """
 
@@ -135,8 +139,10 @@ def main() -> None:
     token = os.environ.get("HF_TOKEN")
     if not token:
         raise SystemExit("Set HF_TOKEN to a write token first")
-    feedback_repo = args.feedback_repo or f"{args.repo.split('/')[0]}/sa-asr-feedback"
     api = HfApi()
+    # Corrections stay in the token owner's private dataset even when the Space belongs to an organization (shared
+    # with its members), so moving the Space does not start a second feedback dataset.
+    feedback_repo = args.feedback_repo or f"{api.whoami(token=token)['name']}/sa-asr-feedback"
     if not api.repo_exists(args.repo, repo_type="space"):
         raise SystemExit(f"Create the Space first on https://huggingface.co/new-space: name {args.repo.split('/')[1]}, "
                          "SDK Gradio (Blank), hardware ZeroGPU, Private. Then run this again.")
