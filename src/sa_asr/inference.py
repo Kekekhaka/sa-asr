@@ -29,7 +29,9 @@ DETECT_MAX_WINDOWS = 12
 # two-language recordings come out right far more often (stretches of 2+ windows), at a small cost for a
 # switch that lasts a single window.
 SWITCH_PENALTY = 6.0
-TEXT_WEIGHT = 1.0  # how much the spelling of a window's text counts against the audio detector
+TEXT_WEIGHT: float | dict[str, float] = 1.0  # how much the spelling of a window's text counts against the audio
+# detector; a dict gives one weight per family of the audio's top language (textlid.family_weight, tuned by lid_combined.py)
+TEXT_TEMPERATURE = 0.05  # softness of the spelling model's verdict (textlid.TextLID.posterior)
 
 
 def resolve_model(model: str) -> tuple[str, list[str] | None]:
@@ -158,7 +160,7 @@ def transcribe_audio(
     lang_code: str | None = None,
     mixed: bool = False,
     text_lid: TextLID | None = None,
-    text_weight: float = TEXT_WEIGHT,
+    text_weight: float | dict[str, float] = TEXT_WEIGHT,
     on_progress: Progress | None = None,
     second_model=None,
 ) -> dict:
@@ -195,7 +197,7 @@ def transcribe_audio(
             labels = smooth_languages(probs, weights)
             if text_lid is not None and probs:
                 window_texts = _transcribe_windows(model, wav, bounds, list(range(len(bounds))), labels, languages, on_progress)
-                probs = [combine(p, text_lid.posterior(window_texts[i][1]), text_weight, len(window_texts[i][1]))
+                probs = [combine(p, text_lid.posterior(window_texts[i][1], TEXT_TEMPERATURE), text_weight, len(window_texts[i][1]))
                          for i, p in enumerate(probs)]
                 labels = smooth_languages(probs, weights)
                 changed = [i for i, (code, _) in window_texts.items() if code != labels[i]]

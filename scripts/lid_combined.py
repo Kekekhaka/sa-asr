@@ -26,11 +26,11 @@ from pathlib import Path
 
 from sa_asr.config import PROJECT_ROOT, load_languages, load_yaml, quiet_progress_bars, select_languages
 from sa_asr.hub import HubSync
-from sa_asr.lid import family_of
+from sa_asr.lid import FAMILIES, family_of
 from sa_asr.textlid import TextLID, combine
 
 log = logging.getLogger("lid_combined")
-WEIGHTS = [0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
+WEIGHTS = [0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
 TEMPERATURES = [0.03, 0.05, 0.1, 0.2]
 CROPS = {"full": None, "5s": 5.0}
 
@@ -96,12 +96,21 @@ def analyze(out_dir: Path, texts_dir: Path, languages: dict) -> str:
     recs = [json.loads(l) for l in (out_dir / "records.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     text_model = train_text_model(texts_dir)
     post_cache: dict[tuple[int, float], dict] = {}
+    # The weight a clip gets can depend on the family of the audio's top language (textlid.family_weight).
+    audio_family = {i: family_of(max(r["audio"], key=r["audio"].get)) for i, r in enumerate(recs)}
 
-    def predict(i: int, r: dict, weight: float, temp: float) -> str:
+    def posterior(i: int, r: dict, temp: float) -> dict:
         key = (i, temp)
         if key not in post_cache:
             post_cache[key] = text_model.posterior(r["text"], temp)
-        return next(iter(combine(r["audio"], post_cache[key], weight, len(r["text"]))))
+        return post_cache[key]
+
+    def predict(i: int, r: dict, weight, temp: float) -> str:
+        if weight == "text":  # the spelling alone
+            p = posterior(i, r, temp)
+            return max(p, key=p.get)
+        w = weight.get(audio_family[i], weight.get("default", 1.0)) if isinstance(weight, dict) else weight
+        return next(iter(combine(r["audio"], posterior(i, r, temp), w, len(r["text"]))))
 
     def acc(rows, weight, temp, family=False):
         hits = sum((family_of(predict(i, r, weight, temp)) == family_of(r["lang"])) if family
@@ -117,32 +126,76 @@ def analyze(out_dir: Path, texts_dir: Path, languages: dict) -> str:
             for w in WEIGHTS for t in TEMPERATURES]
     # Ties go to the setting nearest the app's current one.
     _, best_w, best_t = max(grid, key=lambda g: (g[0], -abs(g[1] - 1.0), -abs(g[2] - 0.05)))
+
+    # Per family: a clip's weight depends only on its audio family, so each family's weight is tuned on its own
+    # clips (both conditions counted), for each temperature; the temperature with the most hits overall wins.
+    families = sorted(set(audio_family.values()))
+    fam_best = None
+    for t in TEMPERATURES:
+        weights, total = {}, 0
+        for f in families:
+            rows = [x for x in dev if audio_family[x[0]] == f]
+            hits = {w: sum(predict(i, r, w, t) == r["lang"] for i, r in rows) for w in WEIGHTS}
+            weights[f] = max(WEIGHTS, key=lambda w: (hits[w], -abs(w - best_w)))
+            total += hits[weights[f]]
+        if fam_best is None or total > fam_best[0]:
+            fam_best = (total, t, weights)
+    _, fam_t, fam_w = fam_best
+    fam_desc = ", ".join(f"{f} {w}" for f, w in fam_w.items())
+
+    settings = [("audio only", 0, 0.05), ("spelling only", "text", best_t), ("current app (w 1.0, T 0.05)", 1.0, 0.05),
+                (f"one weight (w {best_w}, T {best_t})", best_w, best_t), (f"per family (T {fam_t})", fam_w, fam_t)]
     lines = ["# Audio + spelling language identification: tuning", "",
              f"{len(recs)} clip-conditions. Text model trained only on collected training transcripts. "
              "Chosen on a random half of the clips and reported on the other half.", "",
-             f"**Chosen setting: text weight {best_w}, temperature {best_t}** (the app currently uses weight 1.0, temperature 0.05).", "",
+             f"**One weight for all: text weight {best_w}, temperature {best_t}** (the app uses weight 1.0, temperature 0.05).",
+             "",
+             f"**Per family of the audio's top language (temperature {fam_t}):** {fam_desc}.", "",
              "## Held-out accuracy (exact language / family)", "",
              "| setting | " + " | ".join(f"{c} exact | {c} family" for c in CROPS) + " |",
              "|---|" + "---|---|" * len(CROPS)]
-    for name, w, t in (("audio only", 0, 0.05), ("current app (w 1.0, T 0.05)", 1.0, 0.05), (f"chosen (w {best_w}, T {best_t})", best_w, best_t)):
+    for name, w, t in settings:
         cells = []
         for c in CROPS:
             rows = [x for x in test if x[1]["cond"] == c]
             cells += [f"{acc(rows, w, t):.1f}%", f"{acc(rows, w, t, True):.1f}%"]
         lines.append(f"| {name} | " + " | ".join(cells) + " |")
-    lines += ["", "## Weight sweep (held-out, exact; temperature = chosen)", "", "| weight | " + " | ".join(CROPS) + " |",
-              "|---|" + "---|" * len(CROPS)]
+    lines += ["", "## Weight sweep (held-out, exact; temperature = one-weight choice)", "",
+              "| weight | " + " | ".join(CROPS) + " |", "|---|" + "---|" * len(CROPS)]
     for w in WEIGHTS:
         lines.append(f"| {w} | " + " | ".join(f"{acc([x for x in test if x[1]['cond'] == c], w, best_t):.1f}%" for c in CROPS) + " |")
-    lines += ["", "## Per language (held-out, whole clip, exact): audio only vs chosen", "",
-              "| language | audio | chosen |", "|---|---|---|"]
+    head = "| " + " | ".join(n for n, _, _ in settings) + " |"
+    lines += ["", "## Per language (held-out, whole clip, exact)", "", "| language " + head,
+              "|---|" + "---|" * len(settings)]
     for code in sorted({r["lang"] for _, r in test}):
         rows = [x for x in test if x[1]["cond"] == "full" and x[1]["lang"] == code]
-        lines.append(f"| {languages[code].name if code in languages else code} | {acc(rows, 0, best_t):.0f}% | {acc(rows, best_w, best_t):.0f}% |")
-    lines += ["", "## By corpus (held-out, whole clip, exact)", "", "| corpus | audio | chosen |", "|---|---|---|"]
+        name = languages[code].name if code in languages else code
+        lines.append(f"| {name} | " + " | ".join(f"{acc(rows, w, t):.0f}%" for _, w, t in settings) + " |")
+    lines += ["", "## By corpus (held-out, whole clip, exact)", "", "| corpus " + head, "|---|" + "---|" * len(settings)]
     for corpus in sorted({r["corpus"] for _, r in test}):
         rows = [x for x in test if x[1]["cond"] == "full" and x[1]["corpus"] == corpus]
-        lines.append(f"| {corpus} | {acc(rows, 0, best_t):.1f}% | {acc(rows, best_w, best_t):.1f}% |")
+        lines.append(f"| {corpus} | " + " | ".join(f"{acc(rows, w, t):.1f}%" for _, w, t in settings) + " |")
+    st = FAMILIES["Sotho-Tswana"]
+    lines += ["", "## Sotho-Tswana by corpus (held-out, whole clip, exact)", "", "| corpus / language " + head,
+              "|---|" + "---|" * len(settings)]
+    for corpus in sorted({r["corpus"] for _, r in test}):
+        for code in st:
+            rows = [x for x in test if x[1]["cond"] == "full" and x[1]["corpus"] == corpus and x[1]["lang"] == code]
+            if rows:
+                lines.append(f"| {corpus} / {code} ({len(rows)}) | "
+                             + " | ".join(f"{acc(rows, w, t):.0f}%" for _, w, t in settings) + " |")
+    for name, w, t in (settings[0], settings[-1]):
+        lines += ["", f"## Sotho-Tswana confusions, {name} (held-out, whole clip): rows = true, columns = detected", "",
+                  "| true \\ detected | " + " | ".join(st) + " | other |", "|---|" + "---|" * (len(st) + 1)]
+        for code in st:
+            rows = [x for x in test if x[1]["cond"] == "full" and x[1]["lang"] == code]
+            got = [predict(i, r, w, t) for i, r in rows]
+            n = max(len(got), 1)
+            lines.append(f"| {code} | " + " | ".join(f"{100 * got.count(c) / n:.0f}%" for c in st)
+                         + f" | {100 * sum(g not in st for g in got) / n:.0f}% |")
+    lines += ["", "## For the app", "",
+              "inference.TEXT_WEIGHT = {" + ", ".join(f"{f!r}: {w}" for f, w in fam_w.items()) + "}, "
+              f"TEXT_TEMPERATURE = {fam_t}, if the per-family row beats the current app above."]
     return "\n".join(lines)
 
 
@@ -152,7 +205,7 @@ def main() -> None:
     quiet_progress_bars()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", default="configs/eval_baseline.yaml")
-    ap.add_argument("--model", default="KekeCode/sa-asr-whisper-lora-v3")
+    ap.add_argument("--model", default="KekeCode/sa-asr-whisper-lora-v6")
     ap.add_argument("--max-samples", type=int)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--output-dir", default="results/lid_combined")

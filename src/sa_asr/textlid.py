@@ -89,10 +89,23 @@ class TextLID:
             return cls({c: Counter(d) for c, d in json.load(f).items()})
 
 
-def combine(audio: dict[str, float], text: dict[str, float], text_weight: float, n_chars: int) -> dict[str, float]:
+def family_weight(audio: dict[str, float], text_weight: float | dict[str, float]) -> float:
+    """The text weight for this clip: a number, or {family: weight} looked up by the family of the audio's top
+    language (e.g. the spelling counts more when the audio hesitates among Sepedi, Sesotho and Setswana);
+    families not in the dict use its "default" entry (1.0 if absent)."""
+    if not isinstance(text_weight, dict):
+        return text_weight
+    from .lid import family_of
+
+    return text_weight.get(family_of(max(audio, key=audio.get)), text_weight.get("default", 1.0))
+
+
+def combine(audio: dict[str, float], text: dict[str, float], text_weight: float | dict[str, float],
+            n_chars: int) -> dict[str, float]:
     """Audio probabilities times text probabilities^weight, renormalised. The weight shrinks for
-    very short texts. Languages missing from `text` keep only their audio evidence."""
-    w = text_weight * min(1.0, n_chars / FULL_WEIGHT_CHARS)
+    very short texts, and can depend on the audio's top language family (see family_weight).
+    Languages missing from `text` keep only their audio evidence."""
+    w = family_weight(audio, text_weight) * min(1.0, n_chars / FULL_WEIGHT_CHARS)
     logp = {
         c: math.log(max(p, 1e-6)) + (w * math.log(max(text[c], 1e-6)) if c in text else 0.0)
         for c, p in audio.items()

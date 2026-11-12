@@ -33,6 +33,16 @@ def test_text_flips_a_close_audio_call_but_not_a_short_text_one():
     assert next(iter(combine(sure_audio, {"zul": 0.3, "xho": 0.7}, 1.0, 60))) == "zul"
 
 
+def test_text_weight_per_family_of_the_audio_top_language():
+    audio = {"nso": 0.8, "tsn": 0.2}  # the audio leans Sepedi, the spelling says Setswana
+    text = {"nso": 0.05, "tsn": 0.95}
+    assert next(iter(combine(audio, text, 0.25, 60))) == "nso"
+    assert next(iter(combine(audio, text, {"Sotho-Tswana": 3.0, "default": 0.25}, 60))) == "tsn"
+    assert next(iter(combine(audio, text, {"Nguni": 3.0, "default": 0.25}, 60))) == "nso"  # other family: default
+    nguni = {"zul": 0.8, "xho": 0.2}
+    assert next(iter(combine(nguni, {"zul": 0.05, "xho": 0.95}, {"Sotho-Tswana": 3.0}, 60))) == "xho"  # default 1.0
+
+
 class FakeModel:
     """The audio detector is unsure (zul 0.55 vs xho 0.45); the speech is really isiXhosa, which
     is what it writes whatever language it is told (as Whisper mostly does)."""

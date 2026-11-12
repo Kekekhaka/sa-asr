@@ -27,7 +27,7 @@ import yaml
 from sa_asr.config import PROJECT_ROOT
 
 STAGES = ["smoke", "diagnose", "baseline", "trial", "train", "compare", "lid",
-          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "train_v6", "compare_v6", "natural_v6", "lid_v6", "sadilar_inspect", "sadilar_data", "sadilar_fix", "sadilar_v4", "sadilar_v5", "sadilar_v6", "text_lid", "lid_combined", "route_sim", "lid_probe", "report"]
+          "train_v2", "compare_v2", "lid_v2", "lm_rescore", "natural", "train_v3", "compare_v3", "lid_v3", "natural_v3", "train_v4", "compare_v4", "natural_v4", "lid_v4", "lm_v4", "train_v5", "compare_v5", "natural_v5", "lid_v5", "train_v6", "compare_v6", "natural_v6", "lid_v6", "sadilar_inspect", "sadilar_data", "sadilar_fix", "sadilar_v4", "sadilar_v5", "sadilar_v6", "text_lid", "lid_combined", "lid_combined_v6", "nbest_v6", "route_sim", "lid_probe", "report"]
 
 
 def gpu_settings() -> dict:
@@ -180,6 +180,18 @@ def commands(stage: str, user: str, s: dict, max_hours: float | None = None) -> 
     if stage == "lid_combined":  # tune the audio + spelling combination (needs the text_lid stage's collected texts)
         return [(f"{py} scripts/lid_combined.py --config configs/eval_baseline.yaml --model {model_repo}-v3 "
                  f"--max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "lid_combined_v6":  # the app's audio + spelling language detection with v6, and a spelling weight per
+        # language family (Sotho-Tswana: Setswana and Sesotho are heard as Sepedi); records go to their own folder
+        return [(f"{py} scripts/lid_combined.py --config configs/eval_baseline.yaml --model {model_repo}-v6 "
+                 f"--output-dir results/lid_combined_v6 --max-samples {s['eval_samples']} --sync-repo {results}", {})]
+    if stage == "nbest_v6":  # v6's 5 best transcripts on natural speech and SADiLaR, scored by MzansiLM; the LLM
+        # correction (scripts/llm_correct.py --nbest-dir results/lm_rescore_v6/nbest) then runs on a laptop, no GPU
+        cfg = yaml.safe_load(open(PROJECT_ROOT / "configs/eval_baseline.yaml", encoding="utf-8"))
+        cfg["eval_sets"] = {"swivuriso_unscripted": "all", **{c: "all" for c in ("soap", "spcs", "sama", "ast", "multipron")}}
+        with open(PROJECT_ROOT / "configs/eval_nbest.yaml", "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False)
+        return [(f"{py} scripts/lm_rescore.py --config configs/eval_nbest.yaml --model {model_repo}-v6 "
+                 f"--output-dir results/lm_rescore_v6 --max-samples {s['eval_samples']} --sync-repo {results}", {})]
     if stage == "route_sim":  # CPU only: would sending clips to dsfsi-anv (by language and audio bandwidth) beat our model?
         return [(f"{py} scripts/route_sim.py --sync-repo {results}", {})]
     if stage == "lid_probe":  # a classifier on the encoder's features, trained on labelled training clips of all 11 languages

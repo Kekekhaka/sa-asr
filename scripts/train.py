@@ -163,7 +163,9 @@ def main():
             continue  # train-only corpus (e.g. openslr32): nothing held out to validate on
         wer_sets[(corpus, lang)] = build_eval_set(
             corpus, lang, "validation", cache_dir,
-            max_samples=vcfg.get("max_samples_per_set", 32), seed=seed, max_duration_s=max_dur,
+            # Its own seed (default 42), not the training seed: rounds 1-6 changed the training seed each round, which
+            # drew different validation clips, so their validation WERs could not be compared with each other.
+            max_samples=vcfg.get("max_samples_per_set", 32), seed=vcfg.get("seed", 42), max_duration_s=max_dur,
         )
     eval_ds = EvalFeatureDataset(concatenate_datasets(list(wer_sets.values())), processor, labels, max_label_tokens)
 
