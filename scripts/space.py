@@ -131,7 +131,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", choices=["push"])
     ap.add_argument("--repo", required=True, help="the Space, e.g. <user>/sa-asr-app")
-    ap.add_argument("--model", default="KekeCode/sa-asr-whisper-lora-v5", help="the app's default model")
+    ap.add_argument("--model", default="KekeCode/sa-asr-whisper-lora-v6", help="the app's default model")
     ap.add_argument("--feedback-repo", help="private dataset for corrections (default <user>/sa-asr-feedback)")
     args = ap.parse_args()
     from huggingface_hub import CommitOperationAdd, CommitOperationDelete, HfApi
